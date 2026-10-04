@@ -1,0 +1,57 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  all-linux:
+    name: Linux - PHP ${{ matrix.php }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - php: 8.1.33
+            opcache-shared: true
+          - php: 8.2.29
+            opcache-shared: true
+          - php: 8.3.28
+            opcache-shared: true
+          - php: 8.4.15
+            opcache-shared: true
+          - php: 8.5.0
+            opcache-shared: false
+
+    uses: ./.github/workflows/main-php-matrix.yml
+    with:
+      php: ${{ matrix.php }}
+    secrets: inherit
+
+  all-windows:
+    name: Windows - PHP ${{ matrix.php }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - php: 8.1.33
+            vs-crt: vs16
+            opcache-shared: true
+          - php: 8.2.29
+            vs-crt: vs16
+            opcache-shared: true
+          - php: 8.3.28
+            vs-crt: vs16
+            opcache-shared: true
+          - php: 8.4.15
+            vs-crt: vs17
+            opcache-shared: true
+          - php: 8.5.0
+            vs-crt: vs17
+            opcache-shared: false
+
+    uses: ./.github/workflows/main-php-matrix-windows.yml
+    with:
+      php: ${{ matrix.php }}
+      vs-crt: ${{ matrix.vs-crt }}
+    secrets: inherit
