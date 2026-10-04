@@ -13,6 +13,11 @@ class InitializationThread extends \pmmp\thread\Thread {
 class InitializationWorker extends \pmmp\thread\Worker {
 	public string $value = 'default';
 }
+class InitializationFailureWorker extends InitializationWorker {
+	public function __destruct() {
+		$this->getStacked();
+	}
+}
 foreach ([\pmmp\thread\ThreadSafe::class, \pmmp\thread\ThreadSafeArray::class, InitializationThread::class, InitializationWorker::class] as $class) {
 	foreach (['calloc', 'attr', 'type', 'mutex', 'cond'] as $operation) {
 		putenv("PMMPTHREAD_TEST_FAIL=$operation");
@@ -27,6 +32,28 @@ foreach ([\pmmp\thread\ThreadSafe::class, \pmmp\thread\ThreadSafeArray::class, I
 		gc_collect_cycles();
 	}
 }
+putenv('PMMPTHREAD_TEST_FAIL=cond:2');
+try {
+	new InitializationFailureWorker();
+	throw new Exception('Worker queue did not reject condition initialization failure');
+} catch (Error $error) {
+	if ($error->getMessage() !== 'Cannot initialize worker queue') throw $error;
+}
+$worker = new InitializationFailureWorker();
+unset($worker);
+$pool = new \pmmp\thread\Pool(1, InitializationFailureWorker::class);
+$task = new class extends \pmmp\thread\Runnable {
+	public function run() : void {}
+};
+putenv('PMMPTHREAD_TEST_FAIL=cond:2');
+try {
+	$pool->submit($task);
+	throw new Exception('Pool continued after worker initialization failure');
+} catch (Error $error) {
+	if ($error->getMessage() !== 'Cannot initialize worker queue') throw $error;
+}
+$pool->shutdown();
+unset($pool);
 foreach ([InitializationThread::class, InitializationWorker::class] as $class) {
 	foreach (['attr', 'type', 'mutex', 'cond'] as $operation) {
 		$thread = new $class();

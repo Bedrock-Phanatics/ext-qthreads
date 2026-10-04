@@ -141,6 +141,10 @@ zend_object* pmmpthread_worker_ctor(zend_class_entry *entry) {
 	if (worker->ts_obj != NULL && PMMPTHREAD_IN_CREATOR(worker)) {
 		//this may be a connection and not the original object
 		worker->worker_data = pmmpthread_worker_data_alloc(&worker->ts_obj->monitor);
+		if (worker->worker_data == NULL) {
+			GC_ADD_FLAGS(&worker->std, IS_OBJ_DESTRUCTOR_CALLED);
+			zend_throw_error(NULL, "Cannot initialize worker queue");
+		}
 	}
 
 	return &worker->std;

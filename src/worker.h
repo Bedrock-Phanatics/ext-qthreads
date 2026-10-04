@@ -42,6 +42,7 @@ pmmpthread_worker_data_t* pmmpthread_worker_data_alloc(pmmpthread_monitor_t *mon
 zend_long pmmpthread_worker_task_queue_size(pmmpthread_worker_data_t *worker_data);
 void pmmpthread_worker_data_free(pmmpthread_worker_data_t *worker_data);
 zend_long pmmpthread_worker_add_task(pmmpthread_worker_data_t *worker_data, zval *value);
+void pmmpthread_worker_notify(pmmpthread_worker_data_t *worker_data);
 zend_long pmmpthread_worker_dequeue_task(pmmpthread_worker_data_t *worker_data, zval *value);
 zend_long pmmpthread_worker_collect_tasks(pmmpthread_worker_data_t *worker_data, pmmpthread_call_t *call, pmmpthread_worker_collect_function_t collect);
 /* {{{ Runs a pmmpthread_store_full_sync_local_properties() on every task in the GC queue, to ensure availability of properties */

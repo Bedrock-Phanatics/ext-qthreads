@@ -80,6 +80,12 @@ Worker_method(getStacked)
 
 	zend_parse_parameters_none_throw();
 
+	if (!PMMPTHREAD_IN_CREATOR(thread)) {
+		zend_throw_exception_ex(spl_ce_RuntimeException, 0,
+			"only the creator of this %s may call getStacked", ZSTR_VAL(thread->std.ce->name));
+		return;
+	}
+
 	RETURN_LONG(pmmpthread_worker_task_queue_size(thread->worker_data));
 }
 

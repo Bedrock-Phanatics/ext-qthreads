@@ -26,6 +26,7 @@
 
 struct _pmmpthread_worker_data_t {
 	pmmpthread_monitor_t   	*monitor;
+	pthread_cond_t work_available; // PHP waiters use monitor->cond.
 	pmmpthread_queue queue;
 	pmmpthread_queue gc;
 	pmmpthread_queue_item_t *running;
@@ -37,6 +38,10 @@ pmmpthread_worker_data_t* pmmpthread_worker_data_alloc(pmmpthread_monitor_t *mon
 		(pmmpthread_worker_data_t*) ecalloc(1, sizeof(pmmpthread_worker_data_t));
 
 	stack->monitor = monitor;
+	if (pthread_cond_init(&stack->work_available, NULL) != 0) {
+		efree(stack);
+		return NULL;
+	}
 
 	return stack;
 }
@@ -61,6 +66,7 @@ void pmmpthread_worker_data_free(pmmpthread_worker_data_t *worker_data) {
 		//we should never be freeing worker_data for a worker with active tasks
 		ZEND_ASSERT(worker_data->running == NULL);
 
+		pthread_cond_destroy(&worker_data->work_available);
 		efree(worker_data);
 
 		pmmpthread_monitor_unlock(monitor);
@@ -74,7 +80,7 @@ zend_long pmmpthread_worker_add_task(pmmpthread_worker_data_t *worker_data, zval
 		size = worker_data->queue.size;
 		pmmpthread_queue_push_new(&worker_data->queue, value);
 		if (!size) {
-			pmmpthread_monitor_notify(worker_data->monitor);
+			pthread_cond_signal(&worker_data->work_available);
 		}
 		size = worker_data->queue.size;
 		pmmpthread_monitor_unlock(worker_data->monitor);
@@ -83,6 +89,13 @@ zend_long pmmpthread_worker_add_task(pmmpthread_worker_data_t *worker_data, zval
 	}
 
 	return size;
+}
+
+void pmmpthread_worker_notify(pmmpthread_worker_data_t *worker_data) {
+	if (pmmpthread_monitor_lock(worker_data->monitor)) {
+		pthread_cond_broadcast(&worker_data->work_available);
+		pmmpthread_monitor_unlock(worker_data->monitor);
+	}
 }
 
 void pmmpthread_worker_add_garbage(pmmpthread_worker_data_t *worker_data, pmmpthread_queue* done_tasks_cache, zval* work_zval) {
@@ -132,6 +145,7 @@ zend_long pmmpthread_worker_collect_tasks(pmmpthread_worker_data_t *worker_data,
 		if (tasks_collected > 0) {
 			worker_data->tasks_collected += tasks_collected;
 			pmmpthread_monitor_add(worker_data->monitor, PMMPTHREAD_MONITOR_COLLECT_GARBAGE);
+			pthread_cond_broadcast(&worker_data->work_available);
 		}
 
 		size = (worker_data->queue.size + worker_data->gc.size) + (worker_data->running != NULL ? 1 : 0);
@@ -166,7 +180,7 @@ pmmpthread_monitor_state_t pmmpthread_worker_next_task(pmmpthread_worker_data_t 
 	pmmpthread_monitor_state_t state = PMMPTHREAD_MONITOR_RUNNING;
 	if (pmmpthread_monitor_lock(worker_data->monitor)) {
 		do {
-			if (pmmpthread_monitor_check(worker_data->monitor, PMMPTHREAD_MONITOR_COLLECT_GARBAGE)) {
+			if (worker_data->monitor->state & PMMPTHREAD_MONITOR_COLLECT_GARBAGE) {
 				zend_long tasks_collected_on_parent = worker_data->tasks_collected;
 				for (zend_long i = 0; i < tasks_collected_on_parent; i++) {
 					pmmpthread_queue_shift(done_tasks_cache, NULL, PMMPTHREAD_STACK_FREE);
@@ -175,12 +189,12 @@ pmmpthread_monitor_state_t pmmpthread_worker_next_task(pmmpthread_worker_data_t 
 				pmmpthread_monitor_remove(worker_data->monitor, PMMPTHREAD_MONITOR_COLLECT_GARBAGE);
 			}
 			if (!worker_data->queue.head) {
-				if (pmmpthread_monitor_check(worker_data->monitor, PMMPTHREAD_MONITOR_JOINED)) {
+				if (worker_data->monitor->state & PMMPTHREAD_MONITOR_JOINED) {
 					state = PMMPTHREAD_MONITOR_JOINED;
 					break;
 				}
 
-				pmmpthread_monitor_wait(worker_data->monitor, 0);
+				pthread_cond_wait(&worker_data->work_available, &worker_data->monitor->mutex);
 			} else {
 				//this is allocated on the creator thread's ZMM, so we can't free it
 				worker_data->running = worker_data->queue.head;

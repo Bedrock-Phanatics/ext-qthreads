@@ -134,7 +134,13 @@ Pool_method(submit) {
 
 		ctor  = zend_read_property(Z_OBJCE_P(getThis()), Z_OBJ_P(getThis()), ZEND_STRL("ctor"), 1, &tmp[4]);
 
-		object_init_ex(&worker, ce);
+		if (object_init_ex(&worker, ce) == FAILURE) {
+			return;
+		}
+		if (EG(exception)) {
+			zval_ptr_dtor(&worker);
+			return;
+		}
 
 		{
 			zend_class_entry *scope = EG(fake_scope);

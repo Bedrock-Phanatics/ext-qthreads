@@ -1,11 +1,25 @@
 #include <errno.h>
 #include <pthread.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 static inline int pmmpthread_test_fail(const char *operation) {
 	const char *failure = getenv("PMMPTHREAD_TEST_FAIL");
-	if (failure == NULL || strcmp(failure, operation) != 0) return 0;
+	if (failure == NULL) return 0;
+	if (strcmp(failure, operation) != 0) {
+		size_t length = strlen(operation);
+		if (strncmp(failure, operation, length) != 0 || failure[length] != ':') return 0;
+		char *end;
+		long remaining = strtol(failure + length + 1, &end, 10);
+		if (*end != '\0' || remaining < 1) return 0;
+		if (remaining > 1) {
+			char next[64];
+			snprintf(next, sizeof(next), "%s:%ld", operation, remaining - 1);
+			setenv("PMMPTHREAD_TEST_FAIL", next, 1);
+			return 0;
+		}
+	}
 	unsetenv("PMMPTHREAD_TEST_FAIL");
 	return 1;
 }

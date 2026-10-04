@@ -242,6 +242,9 @@ zend_bool pmmpthread_join(pmmpthread_zend_object_t* thread) {
 	}
 
 	pmmpthread_monitor_add(&thread->ts_obj->monitor, PMMPTHREAD_MONITOR_JOINED);
+	if (thread->worker_data != NULL) {
+		pmmpthread_worker_notify(thread->worker_data);
+	}
 
 	//wait for the thread to signal that it's no longer running PHP code
 	pmmpthread_monitor_wait_until(&thread->ts_obj->monitor, PMMPTHREAD_MONITOR_AWAIT_JOIN);
