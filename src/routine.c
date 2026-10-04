@@ -15,12 +15,15 @@ typedef struct _pmmpthread_routine_arg_t {
 } pmmpthread_routine_arg_t; /* }}} */
 
 /* {{{ */
-static void pmmpthread_routine_init(pmmpthread_routine_arg_t* r, pmmpthread_zend_object_t* thread, zend_ulong thread_options) {
+static zend_result pmmpthread_routine_init(pmmpthread_routine_arg_t* r, pmmpthread_zend_object_t* thread, zend_ulong thread_options) {
 	r->thread = thread;
 	r->options = thread_options;
-	pmmpthread_monitor_init(&r->ready);
+	if (pmmpthread_monitor_init(&r->ready) == FAILURE) {
+		return FAILURE;
+	}
 	pmmpthread_monitor_add(
 		&r->thread->ts_obj->monitor, PMMPTHREAD_MONITOR_STARTED);
+	return SUCCESS;
 }
 
 static void pmmpthread_routine_wait(pmmpthread_routine_arg_t* r) {
@@ -186,7 +189,10 @@ zend_bool pmmpthread_start(pmmpthread_zend_object_t* thread, zend_ulong thread_o
 		return 0;
 	}
 
-	pmmpthread_routine_init(&routine, thread, thread_options);
+	if (pmmpthread_routine_init(&routine, thread, thread_options) == FAILURE) {
+		zend_throw_exception_ex(spl_ce_RuntimeException, 0, "Cannot initialize thread startup monitor");
+		return 0;
+	}
 
 	int create_result = pthread_create(&ts_obj->thread, NULL, (void* (*) (void*)) pmmpthread_routine, (void*)&routine);
 	switch (create_result) {

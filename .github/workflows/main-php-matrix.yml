@@ -121,6 +121,11 @@ jobs:
           ./configure --with-php-config=$GITHUB_WORKSPACE/php/bin/php-config --with-pmmpthread-sockets
           make install
 
+      - name: Check monitor initialization and wakeups
+        run: |
+          cc -std=gnu11 -Wall -Wextra -Werror -pthread -I. tests/native/monitor.c -o /tmp/pmmpthread-monitor-test
+          timeout 30 /tmp/pmmpthread-monitor-test
+
       - name: Generate php.ini
         run: |
           echo "extension=pmmpthread.so" > $GITHUB_WORKSPACE/php.ini
@@ -150,6 +155,21 @@ jobs:
         run: |
           $GITHUB_WORKSPACE/php/bin/php ./run-tests.php $TEST_PHP_ARGS -P -j$(nproc) -q --show-diff --show-slow 30000 -n -c $GITHUB_WORKSPACE/php.ini
 
+      - name: Check initialization failures
+        if: matrix.opcache == 'off'
+        run: |
+          make clean
+          CFLAGS="$CFLAGS -include $GITHUB_WORKSPACE/tests/native/fault-injection.h" ./configure --with-php-config=$GITHUB_WORKSPACE/php/bin/php-config --with-pmmpthread-sockets
+          make install
+          PMMPTHREAD_FAULT_INJECTION=1 $GITHUB_WORKSPACE/php/bin/php ./run-tests.php $TEST_PHP_ARGS -P -q --show-diff -n -c $GITHUB_WORKSPACE/php.ini tests/native/initialization-failures.phpt
+          for failure in attr type mutex cond; do
+            if PMMPTHREAD_TEST_FAIL=$failure $GITHUB_WORKSPACE/php/bin/php -n -c $GITHUB_WORKSPACE/php.ini -r 'echo "unexpected startup success\n";' > /tmp/pmmpthread-init.log 2>&1; then
+              cat /tmp/pmmpthread-init.log
+              exit 1
+            fi
+            grep -q 'Unable to start pmmpthread module' /tmp/pmmpthread-init.log
+          done
+
       - name: Upload test results
         if: always()
         uses: actions/upload-artifact@v4
@@ -159,4 +179,7 @@ jobs:
             ${{ github.workspace }}/tests/*.log
             ${{ github.workspace }}/tests/*.diff
             ${{ github.workspace }}/tests/*.mem
+            ${{ github.workspace }}/tests/native/*.log
+            ${{ github.workspace }}/tests/native/*.diff
+            ${{ github.workspace }}/tests/native/*.mem
           if-no-files-found: ignore

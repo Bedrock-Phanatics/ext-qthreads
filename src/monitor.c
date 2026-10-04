@@ -24,22 +24,26 @@ zend_result pmmpthread_monitor_init(pmmpthread_monitor_t* m) {
 
 	m->state = 0;
 
-	pthread_mutexattr_init(&at);
+	if (pthread_mutexattr_init(&at) != 0) {
+		return FAILURE;
+	}
 #if defined(PTHREAD_MUTEX_RECURSIVE) || defined(__FreeBSD__)
-	pthread_mutexattr_settype(&at, PTHREAD_MUTEX_RECURSIVE);
+	int ret = pthread_mutexattr_settype(&at, PTHREAD_MUTEX_RECURSIVE);
 #else
-	pthread_mutexattr_settype(&at, PTHREAD_MUTEX_RECURSIVE_NP);
+	int ret = pthread_mutexattr_settype(&at, PTHREAD_MUTEX_RECURSIVE_NP);
 #endif
-	int ret = pthread_mutex_init(&m->mutex, &at);
+	if (ret != 0) {
+		pthread_mutexattr_destroy(&at);
+		return FAILURE;
+	}
+	ret = pthread_mutex_init(&m->mutex, &at);
 	pthread_mutexattr_destroy(&at);
 	if (ret != 0) {
-		free(m);
 		return FAILURE;
 	}
 
 	if (pthread_cond_init(&m->cond, NULL) != 0) {
 		pthread_mutex_destroy(&m->mutex);
-		free(m);
 		return FAILURE;
 	}
 
@@ -101,7 +105,7 @@ int pmmpthread_monitor_notify_one(pmmpthread_monitor_t *m) {
 
 void pmmpthread_monitor_wait_until(pmmpthread_monitor_t *m, pmmpthread_monitor_state_t state) {
 	if (pmmpthread_monitor_lock(m)) {
-		while (!pmmpthread_monitor_check(m, state)) {
+		while (!(m->state & state)) {
 			if (pmmpthread_monitor_wait(m, 0) != 0) {
 				break;
 			}

@@ -26,7 +26,7 @@
 extern zend_module_entry pmmpthread_module_entry; /* }}} */
 
 /* {{{ */
-static void pmmpthread_base_ctor(pmmpthread_zend_object_t* base, zend_class_entry *entry, unsigned int scope); /* }}} */
+static void pmmpthread_base_ctor(pmmpthread_zend_object_t* base, zend_class_entry *entry, unsigned int scope, const zend_object_handlers *handlers); /* }}} */
 
 /* {{{ */
 static void pmmpthread_ts_object_free(pmmpthread_zend_object_t* base); /* }}} */
@@ -127,8 +127,7 @@ zend_object* pmmpthread_thread_ctor(zend_class_entry *entry) {
 	pmmpthread_zend_object_t* thread = pmmpthread_globals_object_alloc(
 		sizeof(pmmpthread_zend_object_t) + zend_object_properties_size(entry));
 
-	pmmpthread_base_ctor(thread, entry, PMMPTHREAD_SCOPE_THREAD);
-	thread->std.handlers = &pmmpthread_ts_ce_handlers;
+	pmmpthread_base_ctor(thread, entry, PMMPTHREAD_SCOPE_THREAD, &pmmpthread_ts_ce_handlers);
 
 	return &thread->std;
 } /* }}} */
@@ -138,13 +137,11 @@ zend_object* pmmpthread_worker_ctor(zend_class_entry *entry) {
 	pmmpthread_zend_object_t* worker = pmmpthread_globals_object_alloc(
 		sizeof(pmmpthread_zend_object_t) + zend_object_properties_size(entry));
 
-	pmmpthread_base_ctor(worker, entry, PMMPTHREAD_SCOPE_WORKER);
-	if (PMMPTHREAD_IN_CREATOR(worker)) {
+	pmmpthread_base_ctor(worker, entry, PMMPTHREAD_SCOPE_WORKER, &pmmpthread_ts_ce_handlers);
+	if (worker->ts_obj != NULL && PMMPTHREAD_IN_CREATOR(worker)) {
 		//this may be a connection and not the original object
 		worker->worker_data = pmmpthread_worker_data_alloc(&worker->ts_obj->monitor);
 	}
-
-	worker->std.handlers = &pmmpthread_ts_ce_handlers;
 
 	return &worker->std;
 } /* }}} */
@@ -154,8 +151,7 @@ zend_object* pmmpthread_threaded_base_ctor(zend_class_entry *entry) {
 	pmmpthread_zend_object_t* threaded = pmmpthread_globals_object_alloc(
 		sizeof(pmmpthread_zend_object_t) + zend_object_properties_size(entry));
 
-	pmmpthread_base_ctor(threaded, entry, 0);
-	threaded->std.handlers = &pmmpthread_ts_ce_handlers;
+	pmmpthread_base_ctor(threaded, entry, 0, &pmmpthread_ts_ce_handlers);
 
 	return &threaded->std;
 } /* }}} */
@@ -165,8 +161,7 @@ zend_object* pmmpthread_threaded_array_ctor(zend_class_entry *entry) {
 	pmmpthread_zend_object_t* threaded = pmmpthread_globals_object_alloc(
 		sizeof(pmmpthread_zend_object_t) + zend_object_properties_size(entry));
 
-	pmmpthread_base_ctor(threaded, entry, 0);
-	threaded->std.handlers = &pmmpthread_array_ce_handlers;
+	pmmpthread_base_ctor(threaded, entry, 0, &pmmpthread_array_ce_handlers);
 
 	return &threaded->std;
 } /* }}} */
@@ -284,9 +279,15 @@ static inline void pmmpthread_base_write_property_defaults(pmmpthread_zend_objec
 /* {{{ */
 static pmmpthread_object_t* pmmpthread_ts_object_ctor(unsigned int scope) {
 	pmmpthread_object_t* ts_obj = calloc(1, sizeof(pmmpthread_object_t));
+	if (ts_obj == NULL) {
+		return NULL;
+	}
+	if (pmmpthread_monitor_init(&ts_obj->monitor) == FAILURE) {
+		free(ts_obj);
+		return NULL;
+	}
 	ts_obj->scope = scope;
 	ts_obj->refcount = 1;
-	pmmpthread_monitor_init(&ts_obj->monitor);
 	ts_obj->creator.ls = TSRMLS_CACHE;
 	ts_obj->creator.id = pmmpthread_self();
 	pmmpthread_store_init(&ts_obj->props);
@@ -294,19 +295,28 @@ static pmmpthread_object_t* pmmpthread_ts_object_ctor(unsigned int scope) {
 } /* }}} */
 
 /* {{{ */
-static void pmmpthread_base_ctor(pmmpthread_zend_object_t* base, zend_class_entry *entry, unsigned int scope) {
+static void pmmpthread_base_ctor(pmmpthread_zend_object_t* base, zend_class_entry *entry, unsigned int scope, const zend_object_handlers *handlers) {
 	base->owner.ls = TSRMLS_CACHE;
 	base->owner.id = pmmpthread_self();
 	base->worker_data = NULL;
 
 	zend_object_std_init(&base->std, entry);
+	base->std.handlers = handlers;
 	object_properties_init(&base->std, entry);
 
 	if (PMMPTHREAD_ZG(connecting_object) != NULL) {
 		pmmpthread_connect(PMMPTHREAD_ZG(connecting_object), base);
 	} else {
 		base->ts_obj = pmmpthread_ts_object_ctor(scope);
+		if (base->ts_obj == NULL) {
+			zend_throw_error(NULL, "Cannot initialize thread-safe object");
+			return;
+		}
 		pmmpthread_base_write_property_defaults(base);
+	}
+	if (base->ts_obj == NULL) {
+		zend_throw_error(NULL, "Cannot connect thread-safe object");
+		return;
 	}
 	zend_hash_index_add_ptr(&PMMPTHREAD_ZG(resolve), (zend_ulong)base->ts_obj, base);
 
@@ -317,6 +327,10 @@ static void pmmpthread_base_ctor(pmmpthread_zend_object_t* base, zend_class_entr
 void pmmpthread_base_dtor(zend_object *object) {
 	//TODO: how does this play with __destruct() calls (e.g. adding a ref to self)?
 	pmmpthread_zend_object_t* base = PMMPTHREAD_FETCH_FROM(object);
+
+	if (base->ts_obj == NULL) {
+		return;
+	}
 
 	if (PMMPTHREAD_IN_CREATOR(base) && (PMMPTHREAD_IS_THREAD(base)||PMMPTHREAD_IS_WORKER(base)) &&
 		pmmpthread_monitor_check(&base->ts_obj->monitor, PMMPTHREAD_MONITOR_STARTED) &&
@@ -365,10 +379,12 @@ void pmmpthread_base_free(zend_object *object) {
 		PMMPTHREAD_ZG(thread_shared_globals) = NULL;
 	}
 	if (pmmpthread_globals_lock()) {
-		if (--base->ts_obj->refcount == 0) {
-			pmmpthread_ts_object_free(base);
-		} else {
-			pmmpthread_store_persist_local_properties(object);
+		if (base->ts_obj != NULL) {
+			if (--base->ts_obj->refcount == 0) {
+				pmmpthread_ts_object_free(base);
+			} else {
+				pmmpthread_store_persist_local_properties(object);
+			}
 		}
 		pmmpthread_globals_object_delete(base);
 		if (PMMPTHREAD_G(thread_shared_globals) == base) {

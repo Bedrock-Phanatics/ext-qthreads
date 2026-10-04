@@ -26,6 +26,7 @@ jobs:
     uses: ./.github/workflows/main-php-matrix.yml
     with:
       php: ${{ matrix.php }}
+      opcache-shared: ${{ matrix.opcache-shared }}
     secrets: inherit
 
   all-windows:
@@ -54,4 +55,5 @@ jobs:
     with:
       php: ${{ matrix.php }}
       vs-crt: ${{ matrix.vs-crt }}
+      opcache-shared: ${{ matrix.opcache-shared }}
     secrets: inherit
