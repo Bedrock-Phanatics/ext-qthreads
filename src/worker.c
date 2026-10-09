@@ -71,6 +71,11 @@ zend_long pmmpthread_worker_add_task(pmmpthread_worker_data_t *worker_data, zval
 	zend_long size = 0;
 
 	if (pmmpthread_monitor_lock(worker_data->monitor)) {
+		//allow submitting tasks before the worker starts, but not after it exits
+		if (worker_data->monitor->state & (PMMPTHREAD_MONITOR_ERROR | PMMPTHREAD_MONITOR_AWAIT_JOIN | PMMPTHREAD_MONITOR_JOINED)) {
+			pmmpthread_monitor_unlock(worker_data->monitor);
+			return -1;
+		}
 		size = worker_data->queue.size;
 		pmmpthread_queue_push_new(&worker_data->queue, value);
 		if (!size) {
@@ -163,32 +168,32 @@ zend_result pmmpthread_worker_sync_collectable_tasks(pmmpthread_worker_data_t* w
 } /* }}} */
 
 pmmpthread_monitor_state_t pmmpthread_worker_next_task(pmmpthread_worker_data_t *worker_data, pmmpthread_queue* done_tasks_cache, zval *value) {
-	pmmpthread_monitor_state_t state = PMMPTHREAD_MONITOR_RUNNING;
-	if (pmmpthread_monitor_lock(worker_data->monitor)) {
-		do {
-			if (pmmpthread_monitor_check(worker_data->monitor, PMMPTHREAD_MONITOR_COLLECT_GARBAGE)) {
-				zend_long tasks_collected_on_parent = worker_data->tasks_collected;
-				for (zend_long i = 0; i < tasks_collected_on_parent; i++) {
+	pmmpthread_monitor_t *monitor = worker_data->monitor;
+	pmmpthread_monitor_state_t state = PMMPTHREAD_MONITOR_JOINED;
+
+	if (pmmpthread_monitor_lock(monitor)) {
+		while (1) {
+			if (monitor->state & PMMPTHREAD_MONITOR_COLLECT_GARBAGE) {
+				for (zend_long i = 0; i < worker_data->tasks_collected; i++) {
 					pmmpthread_queue_shift(done_tasks_cache, NULL, PMMPTHREAD_STACK_FREE);
 				}
 				worker_data->tasks_collected = 0;
-				pmmpthread_monitor_remove(worker_data->monitor, PMMPTHREAD_MONITOR_COLLECT_GARBAGE);
+				monitor->state &= ~PMMPTHREAD_MONITOR_COLLECT_GARBAGE;
+				pmmpthread_monitor_notify(monitor);
 			}
-			if (!worker_data->queue.head) {
-				if (pmmpthread_monitor_check(worker_data->monitor, PMMPTHREAD_MONITOR_JOINED)) {
-					state = PMMPTHREAD_MONITOR_JOINED;
-					break;
-				}
-
-				pmmpthread_monitor_wait(worker_data->monitor, 0);
-			} else {
+			if (worker_data->queue.head) {
 				//this is allocated on the creator thread's ZMM, so we can't free it
 				worker_data->running = worker_data->queue.head;
 				pmmpthread_queue_shift(&worker_data->queue, value, PMMPTHREAD_STACK_NOTHING);
+				state = PMMPTHREAD_MONITOR_RUNNING;
 				break;
 			}
-		} while (state != PMMPTHREAD_MONITOR_JOINED);
-		pmmpthread_monitor_unlock(worker_data->monitor);
+			if (monitor->state & PMMPTHREAD_MONITOR_JOINED) {
+				break;
+			}
+			pmmpthread_monitor_wait(monitor, 0);
+		}
+		pmmpthread_monitor_unlock(monitor);
 	}
 
 	return state;
