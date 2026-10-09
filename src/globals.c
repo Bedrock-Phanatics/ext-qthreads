@@ -152,8 +152,6 @@ pmmpthread_zend_object_t* pmmpthread_globals_object_alloc(size_t length) {
 		pmmpthread_globals_unlock();
 	}
 
-	memset(bucket, 0, length);
-
 	return bucket;
 } /* }}} */
 

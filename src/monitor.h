@@ -38,12 +38,25 @@ typedef struct _pmmpthread_monitor_t {
 
 zend_result pmmpthread_monitor_init(pmmpthread_monitor_t* m);
 void pmmpthread_monitor_destroy(pmmpthread_monitor_t* m);
-zend_bool pmmpthread_monitor_lock(pmmpthread_monitor_t *m);
-zend_bool pmmpthread_monitor_unlock(pmmpthread_monitor_t *m);
+
+static zend_always_inline zend_bool pmmpthread_monitor_lock(pmmpthread_monitor_t *m) {
+	return (pthread_mutex_lock(&m->mutex) == 0);
+}
+
+static zend_always_inline zend_bool pmmpthread_monitor_unlock(pmmpthread_monitor_t *m) {
+	return (pthread_mutex_unlock(&m->mutex) == 0);
+}
+
+static zend_always_inline int pmmpthread_monitor_notify(pmmpthread_monitor_t *m) {
+	return pthread_cond_broadcast(&m->cond);
+}
+
+static zend_always_inline int pmmpthread_monitor_notify_one(pmmpthread_monitor_t *m) {
+	return pthread_cond_signal(&m->cond);
+}
+
 pmmpthread_monitor_state_t pmmpthread_monitor_check(pmmpthread_monitor_t *m, pmmpthread_monitor_state_t state);
 int pmmpthread_monitor_wait(pmmpthread_monitor_t *m, long timeout);
-int pmmpthread_monitor_notify(pmmpthread_monitor_t *m);
-int pmmpthread_monitor_notify_one(pmmpthread_monitor_t *m);
 void pmmpthread_monitor_wait_until(pmmpthread_monitor_t *m, pmmpthread_monitor_state_t state);
 void pmmpthread_monitor_add(pmmpthread_monitor_t *m, pmmpthread_monitor_state_t state);
 void pmmpthread_monitor_remove(pmmpthread_monitor_t *m, pmmpthread_monitor_state_t state);

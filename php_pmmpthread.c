@@ -197,14 +197,16 @@ PHP_MINIT_FUNCTION(pmmpthread)
 	pmmpthread_ext_sockets_hacks_init();
 #endif
 
-	if (pmmpthread_globals_init()) {
-		TSRMLS_CACHE_UPDATE();
-
-		/*
-		* Global Init
-		*/
-		pmmpthread_instance = TSRMLS_CACHE;
+	if (!pmmpthread_globals_init()) {
+		return FAILURE;
 	}
+
+	TSRMLS_CACHE_UPDATE();
+
+	/*
+	* Global Init
+	*/
+	pmmpthread_instance = TSRMLS_CACHE;
 
 	return SUCCESS;
 }
