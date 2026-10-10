@@ -69,5 +69,7 @@ object(pmmp\thread\Pool)#%d (%d) {
   }
   ["last":protected]=>
   int(%d)
+  ["workerOptions":protected]=>
+  int(1118481)
 }
 

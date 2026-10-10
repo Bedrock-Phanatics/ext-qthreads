@@ -30,7 +30,7 @@ if test "$PHP_PMMPTHREAD" != "no"; then
 		EXTRA_CFLAGS="$EXTRA_CFLAGS -DDMALLOC"
 	fi
 
-	CLASSES_SRC="classes/pool.c classes/thread.c classes/thread_safe_array.c classes/thread_safe.c classes/runnable.c classes/worker.c"
+	CLASSES_SRC="classes/pool.c classes/thread.c classes/thread_safe_array.c classes/thread_safe.c classes/runnable.c classes/worker.c classes/thread_safe_queue.c"
 	PHP_NEW_EXTENSION(pmmpthread, php_pmmpthread.c $CLASSES_SRC src/copy.c src/monitor.c src/worker.c src/globals.c src/prepare.c src/store.c src/handlers.c src/object.c src/routine.c src/queue.c src/ext_sockets_hacks.c, $ext_shared,, -DZEND_ENABLE_STATIC_TSRMLS_CACHE=1 -Werror=implicit-function-declaration)
 	PHP_ADD_BUILD_DIR($ext_builddir/src, 1)
 	PHP_ADD_INCLUDE($ext_builddir)

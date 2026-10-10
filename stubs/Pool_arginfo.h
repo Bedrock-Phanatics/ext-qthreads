@@ -5,6 +5,7 @@ ZEND_BEGIN_ARG_INFO_EX(arginfo_class_pmmp_thread_Pool___construct, 0, 0, 1)
 	ZEND_ARG_TYPE_INFO(0, size, IS_LONG, 0)
 	ZEND_ARG_TYPE_INFO_WITH_DEFAULT_VALUE(0, class, IS_STRING, 0, "pmmp\\thread\\Worker::class")
 	ZEND_ARG_TYPE_INFO_WITH_DEFAULT_VALUE(0, ctor, IS_ARRAY, 0, "[]")
+	ZEND_ARG_TYPE_INFO_WITH_DEFAULT_VALUE(0, options, IS_LONG, 0, "pmmp\\thread\\Thread::INHERIT_ALL")
 ZEND_END_ARG_INFO()
 
 ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_class_pmmp_thread_Pool_collect, 0, 0, IS_LONG, 0)
@@ -82,6 +83,12 @@ static zend_class_entry *register_class_pmmp_thread_Pool(void)
 	zend_string *property_last_name = zend_string_init("last", sizeof("last") - 1, 1);
 	zend_declare_property_ex(class_entry, property_last_name, &property_last_default_value, ZEND_ACC_PROTECTED, NULL);
 	zend_string_release(property_last_name);
+
+	zval property_workerOptions_default_value;
+	ZVAL_LONG(&property_workerOptions_default_value, PMMPTHREAD_INHERIT_ALL);
+	zend_string *property_workerOptions_name = zend_string_init("workerOptions", sizeof("workerOptions") - 1, 1);
+	zend_declare_property_ex(class_entry, property_workerOptions_name, &property_workerOptions_default_value, ZEND_ACC_PROTECTED, NULL);
+	zend_string_release(property_workerOptions_name);
 
 	return class_entry;
 }

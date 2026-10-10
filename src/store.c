@@ -175,7 +175,8 @@ static inline zend_bool pmmpthread_store_storage_is_pmmpthread_obj(zval* zstorag
 void pmmpthread_store_full_sync_local_properties(zend_object *object) {
 	pmmpthread_zend_object_t* threaded = PMMPTHREAD_FETCH_FROM(object);
 
-	if (GC_IS_RECURSIVE(&threaded->std)) {
+	//queued values belong to whoever pops them, not the local cache
+	if (GC_IS_RECURSIVE(&threaded->std) || PMMPTHREAD_IS_QUEUE(threaded)) {
 		return;
 	}
 
@@ -1436,6 +1437,160 @@ static void pmmpthread_store_storage_dtor (zval *zstorage){
 	} else {
 		/* no action necessary */
 	}
+} /* }}} */
+
+/* {{{ pushers keep refs to queued values that point into their memory until a consumer takes them */
+typedef struct _pmmpthread_queue_keepalive_item_t {
+	zend_ulong seq;
+	zval value;
+} pmmpthread_queue_keepalive_item_t;
+
+typedef struct _pmmpthread_queue_keepalive_t {
+	pmmpthread_queue_keepalive_item_t *items;
+	uint32_t head;
+	uint32_t count;
+	uint32_t size;
+} pmmpthread_queue_keepalive_t;
+
+void pmmpthread_store_queue_keepalive_dtor(zval *zv) {
+	pmmpthread_queue_keepalive_t *keepalive = Z_PTR_P(zv);
+	for (uint32_t i = 0; i < keepalive->count; i++) {
+		zval_ptr_dtor(&keepalive->items[(keepalive->head + i) % keepalive->size].value);
+	}
+	efree(keepalive->items);
+	efree(keepalive);
+}
+
+static void pmmpthread_queue_keepalive_add(pmmpthread_object_t *ts_obj, zend_ulong seq, zval *value) {
+	HashTable *table = &PMMPTHREAD_ZG(queue_keepalive);
+	pmmpthread_queue_keepalive_t *keepalive;
+
+	keepalive = zend_hash_index_find_ptr(table, (zend_ulong) ts_obj);
+	if (keepalive == NULL) {
+		keepalive = ecalloc(1, sizeof(pmmpthread_queue_keepalive_t));
+		zend_hash_index_add_new_ptr(table, (zend_ulong) ts_obj, keepalive);
+	}
+	if (keepalive->count == keepalive->size) {
+		uint32_t size = keepalive->size ? keepalive->size * 2 : 16;
+		pmmpthread_queue_keepalive_item_t *items = safe_emalloc(size, sizeof(pmmpthread_queue_keepalive_item_t), 0);
+		for (uint32_t i = 0; i < keepalive->count; i++) {
+			items[i] = keepalive->items[(keepalive->head + i) % keepalive->size];
+		}
+		if (keepalive->items != NULL) {
+			efree(keepalive->items);
+		}
+		keepalive->items = items;
+		keepalive->head = 0;
+		keepalive->size = size;
+	}
+
+	pmmpthread_queue_keepalive_item_t *item = &keepalive->items[(keepalive->head + keepalive->count) % keepalive->size];
+	item->seq = seq;
+	ZVAL_COPY(&item->value, value);
+	keepalive->count++;
+}
+
+static void pmmpthread_queue_keepalive_prune(pmmpthread_object_t *ts_obj, zend_ulong head) {
+	pmmpthread_queue_keepalive_t *keepalive;
+
+	//releasing may run destructors, which can push to this queue or drop it, so look it up again each time
+	while ((keepalive = zend_hash_index_find_ptr(&PMMPTHREAD_ZG(queue_keepalive), (zend_ulong) ts_obj)) != NULL &&
+		keepalive->count > 0 && keepalive->items[keepalive->head].seq < head) {
+		zval value;
+		ZVAL_COPY_VALUE(&value, &keepalive->items[keepalive->head].value);
+		keepalive->head = (keepalive->head + 1) % keepalive->size;
+		keepalive->count--;
+		zval_ptr_dtor(&value);
+	}
+}
+
+void pmmpthread_store_queue_release(pmmpthread_object_t *ts_obj) {
+	zend_hash_index_del(&PMMPTHREAD_ZG(queue_keepalive), (zend_ulong) ts_obj);
+} /* }}} */
+
+static inline zend_bool pmmpthread_store_storage_needs_owner(zval *zstorage) {
+	pmmpthread_storage *storage = TRY_PMMPTHREAD_STORAGE_PTR_P(zstorage);
+	return storage != NULL && (storage->type == STORE_TYPE_STRING_PTR || storage->type == STORE_TYPE_CLOSURE || storage->type == STORE_TYPE_THREADSAFE_OBJECT);
+}
+
+/* {{{ */
+zend_result pmmpthread_store_queue_push(zend_object *object, zval *value) {
+	pmmpthread_zend_object_t *threaded = PMMPTHREAD_FETCH_FROM(object);
+	pmmpthread_queue_object_t *queue = (pmmpthread_queue_object_t*) threaded->ts_obj;
+	zval coerced, zstorage;
+	zend_ulong seq, head;
+	zend_bool needs_owner;
+
+	ZVAL_UNDEF(&coerced);
+	if (Z_TYPE_P(value) == IS_ARRAY) {
+		object_init_ex(&coerced, pmmpthread_ce_array);
+		if (pmmpthread_store_merge(Z_OBJ(coerced), value, 1, PMMPTHREAD_STORE_COERCE_ARRAY) == FAILURE) {
+			zval_ptr_dtor(&coerced);
+			return FAILURE;
+		}
+		value = &coerced;
+	}
+
+	if (pmmpthread_store_save_zval(&threaded->owner, &zstorage, value) == FAILURE) {
+		zval_ptr_dtor(&coerced);
+		return FAILURE;
+	}
+
+	//a consumer may free the storage as soon as it's queued
+	needs_owner = pmmpthread_store_storage_needs_owner(&zstorage);
+
+	if (!pmmpthread_monitor_lock(&queue->base.monitor)) {
+		pmmpthread_store_storage_dtor(&zstorage);
+		zval_ptr_dtor(&coerced);
+		return FAILURE;
+	}
+	seq = queue->tail++;
+	zend_hash_index_add_new(&queue->base.props.hash, seq, &zstorage);
+	head = queue->head;
+	pmmpthread_monitor_unlock(&queue->base.monitor);
+
+	if (needs_owner) {
+		pmmpthread_queue_keepalive_add(&queue->base, seq, value);
+	}
+	pmmpthread_queue_keepalive_prune(&queue->base, head);
+	zval_ptr_dtor(&coerced);
+
+	return SUCCESS;
+} /* }}} */
+
+/* {{{ the caller must have reserved an item, so one is always there */
+zend_result pmmpthread_store_queue_shift(zend_object *object, zval *value) {
+	pmmpthread_queue_object_t *queue = (pmmpthread_queue_object_t*) PMMPTHREAD_FETCH_TS_FROM(object);
+	zval zstorage, *found;
+	zend_bool needs_owner;
+	zend_ulong head;
+
+	if (!pmmpthread_monitor_lock(&queue->base.monitor)) {
+		ZVAL_NULL(value);
+		return FAILURE;
+	}
+	found = zend_hash_index_find(&queue->base.props.hash, queue->head);
+	ZEND_ASSERT(found != NULL);
+	ZVAL_COPY_VALUE(&zstorage, found);
+	ZVAL_NULL(found);
+	zend_hash_index_del(&queue->base.props.hash, queue->head);
+	head = ++queue->head;
+
+	//the pusher may drop its ref as soon as head moves past this item, so anything it owns must be copied first
+	needs_owner = pmmpthread_store_storage_needs_owner(&zstorage);
+	if (needs_owner) {
+		pmmpthread_store_restore_zval(value, &zstorage);
+	}
+	pmmpthread_monitor_unlock(&queue->base.monitor);
+
+	if (!needs_owner) {
+		//may autoload enum classes, so not under the lock
+		pmmpthread_store_restore_zval(value, &zstorage);
+	}
+	pmmpthread_store_storage_dtor(&zstorage);
+	pmmpthread_queue_keepalive_prune(&queue->base, head);
+
+	return EG(exception) ? FAILURE : SUCCESS;
 } /* }}} */
 
 /* {{{ iteration helpers */

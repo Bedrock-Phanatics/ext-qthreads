@@ -80,6 +80,7 @@
 
 extern zend_class_entry *pmmpthread_ce_thread_safe;
 extern zend_class_entry *pmmpthread_ce_array;
+extern zend_class_entry *pmmpthread_ce_queue;
 extern zend_class_entry *pmmpthread_ce_runnable;
 extern zend_class_entry *pmmpthread_ce_thread;
 extern zend_class_entry *pmmpthread_ce_worker;
@@ -104,6 +105,7 @@ extern zend_class_entry *pmmpthread_ce_nts_value_error;
 
 extern zend_object_handlers pmmpthread_ts_ce_handlers;
 extern zend_object_handlers pmmpthread_array_ce_handlers;
+extern zend_object_handlers pmmpthread_queue_ce_handlers;
 extern zend_object_handlers pmmpthread_socket_handlers;
 extern zend_object_handlers *zend_handlers;
 
@@ -119,6 +121,7 @@ ZEND_BEGIN_MODULE_GLOBALS(pmmpthread)
 	HashTable resolve;
 	HashTable filenames;
 	HashTable closure_base_op_arrays;
+	HashTable queue_keepalive;
 	pmmpthread_zend_object_t* connecting_object;
 	pmmpthread_zend_object_t* thread_shared_globals;
 #if HAVE_PMMPTHREAD_EXT_SOCKETS_SUPPORT

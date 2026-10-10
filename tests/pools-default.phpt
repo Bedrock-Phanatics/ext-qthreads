@@ -33,6 +33,8 @@ object(pmmp\thread\Pool)#%d (%d) {
   NULL
   ["last":protected]=>
   int(1)
+  ["workerOptions":protected]=>
+  int(1118481)
 }
 
 

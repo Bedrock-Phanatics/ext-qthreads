@@ -28,6 +28,7 @@
 #include <stubs/ConnectionException_arginfo.h>
 #include <stubs/Worker_arginfo.h>
 #include <stubs/NonThreadSafeValueError_arginfo.h>
+#include <stubs/ThreadSafeQueue_arginfo.h>
 
 #include <php_pmmpthread.h>
 
@@ -79,6 +80,7 @@ zend_module_entry pmmpthread_module_entry = {
 
 zend_class_entry *pmmpthread_ce_thread_safe;
 zend_class_entry *pmmpthread_ce_array;
+zend_class_entry *pmmpthread_ce_queue;
 zend_class_entry *pmmpthread_ce_runnable;
 zend_class_entry *pmmpthread_ce_thread;
 zend_class_entry *pmmpthread_ce_worker;
@@ -88,6 +90,7 @@ zend_class_entry *pmmpthread_ce_nts_value_error;
 
 zend_object_handlers pmmpthread_ts_ce_handlers;
 zend_object_handlers pmmpthread_array_ce_handlers;
+zend_object_handlers pmmpthread_queue_ce_handlers;
 zend_object_handlers *zend_handlers;
 void ***pmmpthread_instance = NULL;
 
@@ -140,6 +143,10 @@ PHP_MINIT_FUNCTION(pmmpthread)
 	pmmpthread_ce_array = register_class_pmmp_thread_ThreadSafeArray(pmmpthread_ce_thread_safe, zend_ce_countable, zend_ce_arrayaccess);
 	pmmpthread_ce_array->create_object = pmmpthread_threaded_array_ctor;
 
+	pmmpthread_ce_queue = register_class_pmmp_thread_ThreadSafeQueue(pmmpthread_ce_thread_safe, zend_ce_countable);
+	pmmpthread_ce_queue->create_object = pmmpthread_queue_ctor;
+	pmmpthread_ce_queue->get_iterator = pmmpthread_queue_iterator_create;
+
 	pmmpthread_ce_connection_exception = register_class_pmmp_thread_ConnectionException(spl_ce_RuntimeException);
 	pmmpthread_ce_nts_value_error = register_class_pmmp_thread_NonThreadSafeValueError(zend_ce_value_error);
 
@@ -190,6 +197,15 @@ PHP_MINIT_FUNCTION(pmmpthread)
 	pmmpthread_array_ce_handlers.write_property = pmmpthread_write_property_deny;
 	pmmpthread_array_ce_handlers.has_property = pmmpthread_has_property_deny;
 	pmmpthread_array_ce_handlers.unset_property = pmmpthread_unset_property_deny;
+
+	memcpy(&pmmpthread_queue_ce_handlers, &pmmpthread_ts_ce_handlers, sizeof(zend_object_handlers));
+	pmmpthread_queue_ce_handlers.get_properties = zend_std_get_properties;
+	pmmpthread_queue_ce_handlers.get_debug_info = NULL;
+	pmmpthread_queue_ce_handlers.count_elements = pmmpthread_queue_count;
+	pmmpthread_queue_ce_handlers.read_property = pmmpthread_read_property_deny;
+	pmmpthread_queue_ce_handlers.write_property = pmmpthread_write_property_deny;
+	pmmpthread_queue_ce_handlers.has_property = pmmpthread_has_property_deny;
+	pmmpthread_queue_ce_handlers.unset_property = pmmpthread_unset_property_deny;
 
 	ZEND_INIT_MODULE_GLOBALS(pmmpthread, pmmpthread_globals_ctor, NULL);
 
@@ -281,6 +297,7 @@ PHP_RINIT_FUNCTION(pmmpthread) {
 	zend_hash_init(&PMMPTHREAD_ZG(resolve), 15, NULL, NULL, 0);
 	zend_hash_init(&PMMPTHREAD_ZG(filenames), 15, NULL, NULL, 0);
 	zend_hash_init(&PMMPTHREAD_ZG(closure_base_op_arrays), 15, NULL, ZEND_FUNCTION_DTOR, 0);
+	zend_hash_init(&PMMPTHREAD_ZG(queue_keepalive), 8, NULL, pmmpthread_store_queue_keepalive_dtor, 0);
 
 	PMMPTHREAD_ZG(options) = PMMPTHREAD_INHERIT_ALL;
 	PMMPTHREAD_ZG(connecting_object) = NULL;
@@ -306,13 +323,17 @@ PHP_RSHUTDOWN_FUNCTION(pmmpthread) {
 	//objects aren't freed yet, so anything this thread stored is still valid here
 	for (uint32_t i = 1; i < EG(objects_store).top; i++) {
 		zend_object* obj = EG(objects_store).object_buckets[i];
-		if (IS_OBJ_VALID(obj) && (obj->handlers == &pmmpthread_ts_ce_handlers || obj->handlers == &pmmpthread_array_ce_handlers)) {
+		if (IS_OBJ_VALID(obj) && (obj->handlers == &pmmpthread_ts_ce_handlers || obj->handlers == &pmmpthread_array_ce_handlers || obj->handlers == &pmmpthread_queue_ce_handlers)) {
 			if (PMMPTHREAD_FETCH_FROM(obj)->ts_obj != NULL) {
 				pmmpthread_store_persist_local_properties(obj);
 			}
 		}
 	}
 
+	//swapped out first, since releasing these may free queues which look themselves up in it
+	HashTable keepalive = PMMPTHREAD_ZG(queue_keepalive);
+	zend_hash_init(&PMMPTHREAD_ZG(queue_keepalive), 8, NULL, pmmpthread_store_queue_keepalive_dtor, 0);
+	zend_hash_destroy(&keepalive);
 	zend_hash_destroy(&PMMPTHREAD_ZG(filenames));
 	zend_hash_destroy(&PMMPTHREAD_ZG(closure_base_op_arrays));
 

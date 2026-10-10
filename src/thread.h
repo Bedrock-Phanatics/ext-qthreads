@@ -40,6 +40,20 @@ typedef struct _pmmpthread_object_t {
 } pmmpthread_object_t; /* }}} */
 
 /* {{{ */
+typedef struct _pmmpthread_queue_object_t {
+	pmmpthread_object_t base;
+	//items are in base.props keyed by sequence number; head/tail are guarded by base.monitor
+	zend_ulong head;
+	zend_ulong tail;
+	//only for waiting; never held with another lock or while running PHP code
+	pthread_mutex_t mutex;
+	pthread_cond_t cond;
+	zend_long available;
+	zend_long pushing;
+	zend_bool closed;
+} pmmpthread_queue_object_t; /* }}} */
+
+/* {{{ */
 struct _pmmpthread_zend_object_t;
 typedef struct _pmmpthread_zend_object_t pmmpthread_zend_object_t;
 
@@ -81,11 +95,13 @@ static inline pmmpthread_zend_object_t* _pmmpthread_fetch_object(zend_object *ob
 /* {{{ scope constants */
 #define PMMPTHREAD_SCOPE_THREAD      (1<<2)
 #define PMMPTHREAD_SCOPE_WORKER      (1<<3)
+#define PMMPTHREAD_SCOPE_QUEUE       (1<<4)
 /* }}} */
 
 /* {{{ scope macros */
 #define PMMPTHREAD_IS_THREAD(t)           ((t)->ts_obj->scope & PMMPTHREAD_SCOPE_THREAD)
 #define PMMPTHREAD_IS_WORKER(t)           ((t)->ts_obj->scope & PMMPTHREAD_SCOPE_WORKER)
+#define PMMPTHREAD_IS_QUEUE(t)            ((t)->ts_obj->scope & PMMPTHREAD_SCOPE_QUEUE)
 /* }}} */
 
 /* {{{ pthread_self wrapper */

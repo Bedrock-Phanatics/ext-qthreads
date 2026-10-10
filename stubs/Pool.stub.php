@@ -50,13 +50,21 @@ class Pool{
     protected $last = 0;
 
     /**
+     * The options passed to Worker::start() when this Pool starts a new Worker
+     *
+     * @var int
+     */
+    protected $workerOptions = Thread::INHERIT_ALL;
+
+    /**
      * Construct a new Pool of Workers
      *
      * @param integer $size The maximum number of Workers this Pool can create
      * @param string $class The class for new Workers
      * @param array $ctor An array of arguments to be passed to new Workers
+     * @param int $options Thread::INHERIT_* flags passed to Worker::start(), e.g. Thread::INHERIT_NONE for minimal startup cost
      */
-    public function __construct(int $size, string $class = Worker::class, array $ctor = []) {}
+    public function __construct(int $size, string $class = Worker::class, array $ctor = [], int $options = Thread::INHERIT_ALL) {}
 
     /**
      * Collect references to completed tasks

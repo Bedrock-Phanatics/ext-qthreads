@@ -167,6 +167,16 @@ zend_object* pmmpthread_threaded_array_ctor(zend_class_entry *entry) {
 } /* }}} */
 
 /* {{{ */
+zend_object* pmmpthread_queue_ctor(zend_class_entry *entry) {
+	pmmpthread_zend_object_t* threaded = pmmpthread_globals_object_alloc(
+		sizeof(pmmpthread_zend_object_t) + zend_object_properties_size(entry));
+
+	pmmpthread_base_ctor(threaded, entry, PMMPTHREAD_SCOPE_QUEUE, &pmmpthread_queue_ce_handlers);
+
+	return &threaded->std;
+} /* }}} */
+
+/* {{{ */
 void pmmpthread_current_thread(zval *return_value) {
 	if (Z_TYPE(PMMPTHREAD_ZG(this)) != IS_UNDEF) {
 		ZVAL_COPY(return_value, &PMMPTHREAD_ZG(this));
@@ -268,13 +278,27 @@ static inline void pmmpthread_base_write_property_defaults(pmmpthread_zend_objec
 
 /* {{{ */
 static pmmpthread_object_t* pmmpthread_ts_object_ctor(unsigned int scope) {
-	pmmpthread_object_t* ts_obj = calloc(1, sizeof(pmmpthread_object_t));
+	pmmpthread_object_t* ts_obj = calloc(1, (scope & PMMPTHREAD_SCOPE_QUEUE) ? sizeof(pmmpthread_queue_object_t) : sizeof(pmmpthread_object_t));
 	if (ts_obj == NULL) {
 		return NULL;
 	}
 	if (pmmpthread_monitor_init(&ts_obj->monitor) == FAILURE) {
 		free(ts_obj);
 		return NULL;
+	}
+	if (scope & PMMPTHREAD_SCOPE_QUEUE) {
+		pmmpthread_queue_object_t* queue = (pmmpthread_queue_object_t*) ts_obj;
+		if (pthread_mutex_init(&queue->mutex, NULL) != 0) {
+			pmmpthread_monitor_destroy(&ts_obj->monitor);
+			free(ts_obj);
+			return NULL;
+		}
+		if (pthread_cond_init(&queue->cond, NULL) != 0) {
+			pthread_mutex_destroy(&queue->mutex);
+			pmmpthread_monitor_destroy(&ts_obj->monitor);
+			free(ts_obj);
+			return NULL;
+		}
 	}
 	ts_obj->scope = scope;
 	ts_obj->refcount = 1;
@@ -338,6 +362,11 @@ static void pmmpthread_ts_object_free(pmmpthread_zend_object_t* base) {
 	}
 
 	pmmpthread_monitor_destroy(&ts_obj->monitor);
+	if (ts_obj->scope & PMMPTHREAD_SCOPE_QUEUE) {
+		//nobody can be waiting, since waiters hold a ref
+		pthread_mutex_destroy(&((pmmpthread_queue_object_t*) ts_obj)->mutex);
+		pthread_cond_destroy(&((pmmpthread_queue_object_t*) ts_obj)->cond);
+	}
 
 	free(ts_obj);
 } /* }}} */
@@ -354,6 +383,12 @@ void pmmpthread_base_free(zend_object *object) {
 
 	if (base->worker_data) {
 		pmmpthread_worker_data_free(base->worker_data);
+	}
+
+	if (PMMPTHREAD_IS_QUEUE(base)) {
+		//values we pushed may still be queued, so make them safe for consumers before dropping our refs
+		pmmpthread_store_persist_local_properties(object);
+		pmmpthread_store_queue_release(base->ts_obj);
 	}
 
 	if (zend_hash_index_find_ptr(&PMMPTHREAD_ZG(resolve), (zend_ulong)base->ts_obj) == base) {

@@ -50,6 +50,11 @@ int pmmpthread_store_shift(zend_object *object, zval *member);
 int pmmpthread_store_chunk(zend_object *object, zend_long size, zend_bool preserve, zval *chunk);
 int pmmpthread_store_pop(zend_object *object, zval *member);
 int pmmpthread_store_count(zend_object *object, zend_long *count);
+struct _pmmpthread_object_t;
+zend_result pmmpthread_store_queue_push(zend_object *object, zval *value);
+zend_result pmmpthread_store_queue_shift(zend_object *object, zval *value);
+void pmmpthread_store_queue_release(struct _pmmpthread_object_t *ts_obj);
+void pmmpthread_store_queue_keepalive_dtor(zval *zv);
 /* {{{ Copies any thread-local data to permanent storage when an object ref is destroyed */
 void pmmpthread_store_persist_local_properties(zend_object* object); /* }}} */
 
