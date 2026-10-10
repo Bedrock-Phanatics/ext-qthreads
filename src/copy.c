@@ -66,7 +66,11 @@ int pmmpthread_copy_zval(const pmmpthread_ident_t* owner, zval* dest, zval* sour
 		break;
 
 	case IS_ARRAY:
-		ZVAL_ARR(dest, pmmpthread_copy_hash(owner, Z_ARRVAL_P(source)));
+		if (Z_ARRVAL_P(source) == &zend_empty_array) {
+			ZVAL_EMPTY_ARRAY(dest);
+		} else {
+			ZVAL_ARR(dest, pmmpthread_copy_hash(owner, Z_ARRVAL_P(source)));
+		}
 		result = SUCCESS;
 		break;
 
@@ -105,7 +109,7 @@ static HashTable* pmmpthread_copy_hash(const pmmpthread_ident_t* owner, HashTabl
 	zend_string* key;
 	zval* val;
 
-	//TODO: what about IS_ARRAY_IMMUTABLE?
+	//file_cache_only keeps immutable arrays in request memory, so they can't be shared
 	HashTable* ht = (HashTable*)pemalloc(sizeof(HashTable), GC_FLAGS(source) & IS_ARRAY_PERSISTENT);
 	zend_hash_init(ht, source->nNumUsed, NULL, source->pDestructor, GC_FLAGS(source) & IS_ARRAY_PERSISTENT);
 

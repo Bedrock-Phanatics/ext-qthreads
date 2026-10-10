@@ -373,9 +373,21 @@ int pmmpthread_has_property(PMMPTHREAD_HAS_PROPERTY_PASSTHRU_D) {
 		(*guard) &= ~IN_ISSET;
 
 		if (Z_TYPE(rv) != IS_UNDEF) {
-			//TODO: this doesn't account for ZEND_PROPERTY_NOT_EMPTY
 			isset = zend_is_true(&rv);
 			zval_ptr_dtor(&rv);
+		}
+
+		if (isset && has_set_exists == ZEND_PROPERTY_NOT_EMPTY) {
+			//empty() needs the __get() value too, like zend_std_has_property()
+			isset = 0;
+			if (!EG(exception) && object->ce->__get && !((*guard) & IN_GET)) {
+				ZVAL_UNDEF(&rv);
+				(*guard) |= IN_GET;
+				zend_call_known_instance_method_with_1_params(object->ce->__get, object, &rv, &zmember);
+				(*guard) &= ~IN_GET;
+				isset = zend_is_true(&rv);
+				zval_ptr_dtor(&rv);
+			}
 		}
 	} else {
 		zend_property_info* info = zend_get_property_info(object->ce, member, 1);

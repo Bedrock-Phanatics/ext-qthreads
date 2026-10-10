@@ -30,7 +30,7 @@
 #define PMMPTHREAD_STORAGE_EMPTY {0, 0, 0, 0, NULL}
 
 /* {{{ */
-static zend_result pmmpthread_store_save_zval(pmmpthread_ident_t* source, zval* zstorage, zval* write);
+static zend_always_inline zend_result pmmpthread_store_save_zval(pmmpthread_ident_t* source, zval* zstorage, zval* write);
 static void pmmpthread_store_restore_zval_ex(zval* unstore, zval* zstorage, zend_bool* may_be_locally_cached);
 static void pmmpthread_store_restore_zval(zval* unstore, zval* zstorage); /* }}} */
 static void pmmpthread_store_storage_dtor(zval* element);
@@ -880,6 +880,13 @@ void pmmpthread_store_persist_local_properties(zend_object* object) {
 
 					ZVAL_STR(zstorage, persistent_string);
 				}
+			} else if (storage != NULL && storage->type == STORE_TYPE_CLOSURE) {
+				pmmpthread_closure_storage_t* closure = (pmmpthread_closure_storage_t*)storage;
+				if (closure->owner.ls == TSRMLS_CACHE) {
+					//the closure dies with this connection's cache
+					closure->closure = NULL;
+					closure->this_obj = NULL;
+				}
 			}
 		} ZEND_HASH_FOREACH_END();
 
@@ -969,10 +976,7 @@ static pmmpthread_storage* pmmpthread_store_create(pmmpthread_ident_t* source, z
 				}
 
 				MAKE_STORAGE(STORE_TYPE_CLOSURE, pmmpthread_closure_storage_t);
-				//TODO: this might result in faults because it's not copied properly
-				//since we aren't copying this to persistent memory, a fault is going to
-				//happen if it's dereferenced after the original closure is destroyed
-				//(for what it's worth, this was always a problem.)
+				//only valid while the owner's local cache holds it, see pmmpthread_store_persist_local_properties()
 				if (Z_TYPE(closure->this_ptr) == IS_OBJECT) {
 					pmmpthread_zend_object_t* this_object = PMMPTHREAD_FETCH_FROM(Z_OBJ(closure->this_ptr));
 					storage->this_obj = this_object;
@@ -1021,7 +1025,7 @@ static pmmpthread_storage* pmmpthread_store_create(pmmpthread_ident_t* source, z
 /* }}} */
 
 /* {{{ */
-static zend_result pmmpthread_store_save_zval(pmmpthread_ident_t* source, zval *zstorage, zval *write) {
+static zend_always_inline zend_result pmmpthread_store_save_zval(pmmpthread_ident_t* source, zval *zstorage, zval *write) {
 	zend_result result = FAILURE;
 	switch (Z_TYPE_P(write)) {
 		case IS_NULL:
@@ -1073,7 +1077,14 @@ static int pmmpthread_store_convert(pmmpthread_storage *storage, zval *pzval){
 
 		case STORE_TYPE_CLOSURE: {
 			const pmmpthread_closure_storage_t* closure_data = (const pmmpthread_closure_storage_t* )storage;
-			result = pmmpthread_copy_closure(&closure_data->owner, closure_data->closure, 0, pzval);
+			if (closure_data->closure == NULL) {
+				zend_throw_exception_ex(
+					pmmpthread_ce_connection_exception, 0,
+					"pmmpthread detected an attempt to use a closure which has already been destroyed by the thread which stored it");
+				result = FAILURE;
+			} else {
+				result = pmmpthread_copy_closure(&closure_data->owner, closure_data->closure, 0, pzval);
+			}
 		} break;
 
 		case STORE_TYPE_THREADSAFE_OBJECT: {
@@ -1168,11 +1179,18 @@ static void pmmpthread_store_hard_copy_storage(zval *new_zstorage, zval *zstorag
 			pmmpthread_string_storage_t* string = (pmmpthread_string_storage_t*)storage;
 			ZVAL_STR(new_zstorage, pmmpthread_store_save_string(string->string));
 
+		} else if (storage->type == STORE_TYPE_ENUM) {
+			const pmmpthread_enum_storage_t* source = (const pmmpthread_enum_storage_t*)storage;
+			pmmpthread_enum_storage_t* copy = pemalloc(sizeof(pmmpthread_enum_storage_t), 1);
+			copy->common.type = STORE_TYPE_ENUM;
+			copy->class_name = pmmpthread_store_save_string(source->class_name);
+			copy->member_name = pmmpthread_store_save_string(source->member_name);
+			ZVAL_PTR(new_zstorage, copy);
 		} else {
 
 #define CASE_STORAGE(enum_type, struct_type) \
 				case enum_type: { \
-					struct_type* copy = malloc(sizeof(struct_type)); \
+					struct_type* copy = pemalloc(sizeof(struct_type), 1); \
 					memcpy(copy, storage, sizeof(struct_type)); \
 					ZVAL_PTR(new_zstorage, copy); \
 				} break;
@@ -1183,7 +1201,6 @@ static void pmmpthread_store_hard_copy_storage(zval *new_zstorage, zval *zstorag
 #if HAVE_PMMPTHREAD_EXT_SOCKETS_SUPPORT
 				CASE_STORAGE(STORE_TYPE_SOCKET, pmmpthread_socket_storage_t);
 #endif
-				CASE_STORAGE(STORE_TYPE_ENUM, pmmpthread_enum_storage_t); //TODO: we need to copy or intern these strings, otherwise UAF will occur
 				default: {
 					ZEND_ASSERT(0);
 					ZVAL_UNDEF(new_zstorage);
@@ -1240,8 +1257,23 @@ int pmmpthread_store_merge(zend_object *destination, zval *from, zend_bool overw
 								overwrote_pmmpthread_object = pmmpthread_store_member_is_cacheable(destination, &key);
 							}
 
-							zval new_zstorage;
-							pmmpthread_store_hard_copy_storage(&new_zstorage, storage);
+							zval new_zstorage, closure;
+							pmmpthread_storage* source_storage = TRY_PMMPTHREAD_STORAGE_PTR_P(storage);
+							ZVAL_UNDEF(&closure);
+							if (source_storage != NULL && source_storage->type == STORE_TYPE_CLOSURE) {
+								//the source closure can die with its owner, so keep our own copy
+								pmmpthread_store_restore_zval(&closure, storage);
+								if (EG(exception)) {
+									zval_ptr_dtor(&closure);
+									break;
+								}
+								if (pmmpthread_store_save_zval(&PMMPTHREAD_FETCH_FROM(destination)->owner, &new_zstorage, &closure) == FAILURE) {
+									zval_ptr_dtor(&closure);
+									break;
+								}
+							} else {
+								pmmpthread_store_hard_copy_storage(&new_zstorage, storage);
+							}
 							pmmpthread_store_update_shared_property(threaded[0], &key, &new_zstorage);
 							if (destination->properties != NULL) {
 								if (Z_TYPE(key) == IS_LONG) {
@@ -1249,6 +1281,10 @@ int pmmpthread_store_merge(zend_object *destination, zval *from, zend_bool overw
 								} else {
 									zend_hash_del(destination->properties, Z_STR(key));
 								}
+							}
+							if (!Z_ISUNDEF(closure)) {
+								pmmpthread_store_update_local_property(destination, &key, &closure);
+								zval_ptr_dtor(&closure);
 							}
 						}
 						if (overwrote_pmmpthread_object) {
@@ -1263,7 +1299,7 @@ int pmmpthread_store_merge(zend_object *destination, zval *from, zend_bool overw
 
 					pmmpthread_monitor_unlock(&threaded[0]->monitor);
 
-					return SUCCESS;
+					return EG(exception) ? FAILURE : SUCCESS;
 
 				} else return FAILURE;
 			}

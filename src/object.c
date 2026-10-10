@@ -292,11 +292,11 @@ static void pmmpthread_base_ctor(pmmpthread_zend_object_t* base, zend_class_entr
 
 	zend_object_std_init(&base->std, entry);
 	object_properties_init(&base->std, entry);
-	//must be set before we can bail out, otherwise the object store can't free this object
+	//set early so the object can still be freed if we bail out
 	base->std.handlers = handlers;
 
 	if (PMMPTHREAD_ZG(connecting_object) != NULL) {
-		//pmmpthread_object_connect() holds the globals lock while connecting
+		//caller holds the globals lock
 		_pmmpthread_connect_nolock(PMMPTHREAD_ZG(connecting_object), base);
 	} else {
 		base->ts_obj = pmmpthread_ts_object_ctor(scope);
@@ -347,7 +347,6 @@ void pmmpthread_base_free(zend_object *object) {
 	pmmpthread_zend_object_t* base = PMMPTHREAD_FETCH_FROM(object);
 
 	if (base->ts_obj == NULL) {
-		//initialization failed before the object was connected to anything
 		pmmpthread_globals_object_delete(base);
 		zend_object_std_dtor(object);
 		return;
@@ -369,10 +368,14 @@ void pmmpthread_base_free(zend_object *object) {
 		PMMPTHREAD_ZG(thread_shared_globals) = NULL;
 	}
 	if (pmmpthread_globals_lock()) {
+		if (base->ts_obj->refcount > 1) {
+			//can't take the monitor under the globals lock; our ref keeps ts_obj alive meanwhile
+			pmmpthread_globals_unlock();
+			pmmpthread_store_persist_local_properties(object);
+			pmmpthread_globals_lock();
+		}
 		if (--base->ts_obj->refcount == 0) {
 			pmmpthread_ts_object_free(base);
-		} else {
-			pmmpthread_store_persist_local_properties(object);
 		}
 		pmmpthread_globals_object_delete(base);
 		if (PMMPTHREAD_G(thread_shared_globals) == base) {
