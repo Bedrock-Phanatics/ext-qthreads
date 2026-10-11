@@ -78,6 +78,9 @@
 #include <dmalloc.h>
 #endif
 
+/* {{{ allocations are aligned, so a plain pointer key only uses a fraction of the buckets; rotating is lossless */
+#define PMMPTHREAD_PTR_KEY(p) ((((zend_ulong) (uintptr_t) (p)) >> 3) | (((zend_ulong) (uintptr_t) (p)) << (sizeof(zend_ulong) * 8 - 3))) /* }}} */
+
 extern zend_class_entry *pmmpthread_ce_thread_safe;
 extern zend_class_entry *pmmpthread_ce_array;
 extern zend_class_entry *pmmpthread_ce_queue;

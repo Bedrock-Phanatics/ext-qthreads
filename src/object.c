@@ -212,7 +212,7 @@ zend_bool pmmpthread_object_connect(pmmpthread_zend_object_t* address, zval *obj
 			Z_ADDREF_P(object);
 		} else {
 			/* we do not own the object, create or find a connection */
-			pmmpthread_zend_object_t* connection = (pmmpthread_zend_object_t*) zend_hash_index_find_ptr(&PMMPTHREAD_ZG(resolve), (zend_ulong)original->ts_obj);
+			pmmpthread_zend_object_t* connection = (pmmpthread_zend_object_t*) zend_hash_index_find_ptr(&PMMPTHREAD_ZG(resolve), PMMPTHREAD_PTR_KEY(original->ts_obj));
 			if (connection) {
 				/* a connection already exists on this thread, reuse it */
 				ZVAL_OBJ_COPY(object, &connection->std);
@@ -329,7 +329,7 @@ static void pmmpthread_base_ctor(pmmpthread_zend_object_t* base, zend_class_entr
 		}
 		pmmpthread_base_write_property_defaults(base);
 	}
-	zend_hash_index_add_ptr(&PMMPTHREAD_ZG(resolve), (zend_ulong)base->ts_obj, base);
+	zend_hash_index_add_ptr(&PMMPTHREAD_ZG(resolve), PMMPTHREAD_PTR_KEY(base->ts_obj), base);
 
 	base->local_props_modcount = base->ts_obj->props.modcount - 1;
 } /* }}} */
@@ -391,9 +391,9 @@ void pmmpthread_base_free(zend_object *object) {
 		pmmpthread_store_queue_release(base->ts_obj);
 	}
 
-	if (zend_hash_index_find_ptr(&PMMPTHREAD_ZG(resolve), (zend_ulong)base->ts_obj) == base) {
+	if (zend_hash_index_find_ptr(&PMMPTHREAD_ZG(resolve), PMMPTHREAD_PTR_KEY(base->ts_obj)) == base) {
 		/* this is the primary connection to the TS object on the current thread - destroy it */
-		zend_hash_index_del(&PMMPTHREAD_ZG(resolve), (zend_ulong)base->ts_obj);
+		zend_hash_index_del(&PMMPTHREAD_ZG(resolve), PMMPTHREAD_PTR_KEY(base->ts_obj));
 	}
 
 	if (PMMPTHREAD_ZG(thread_shared_globals) == base) {

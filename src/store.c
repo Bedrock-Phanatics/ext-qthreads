@@ -1465,10 +1465,10 @@ static void pmmpthread_queue_keepalive_add(pmmpthread_object_t *ts_obj, zend_ulo
 	HashTable *table = &PMMPTHREAD_ZG(queue_keepalive);
 	pmmpthread_queue_keepalive_t *keepalive;
 
-	keepalive = zend_hash_index_find_ptr(table, (zend_ulong) ts_obj);
+	keepalive = zend_hash_index_find_ptr(table, PMMPTHREAD_PTR_KEY(ts_obj));
 	if (keepalive == NULL) {
 		keepalive = ecalloc(1, sizeof(pmmpthread_queue_keepalive_t));
-		zend_hash_index_add_new_ptr(table, (zend_ulong) ts_obj, keepalive);
+		zend_hash_index_add_new_ptr(table, PMMPTHREAD_PTR_KEY(ts_obj), keepalive);
 	}
 	if (keepalive->count == keepalive->size) {
 		uint32_t size = keepalive->size ? keepalive->size * 2 : 16;
@@ -1494,7 +1494,7 @@ static void pmmpthread_queue_keepalive_prune(pmmpthread_object_t *ts_obj, zend_u
 	pmmpthread_queue_keepalive_t *keepalive;
 
 	//releasing may run destructors, which can push to this queue or drop it, so look it up again each time
-	while ((keepalive = zend_hash_index_find_ptr(&PMMPTHREAD_ZG(queue_keepalive), (zend_ulong) ts_obj)) != NULL &&
+	while ((keepalive = zend_hash_index_find_ptr(&PMMPTHREAD_ZG(queue_keepalive), PMMPTHREAD_PTR_KEY(ts_obj))) != NULL &&
 		keepalive->count > 0 && keepalive->items[keepalive->head].seq < head) {
 		zval value;
 		ZVAL_COPY_VALUE(&value, &keepalive->items[keepalive->head].value);
@@ -1505,7 +1505,7 @@ static void pmmpthread_queue_keepalive_prune(pmmpthread_object_t *ts_obj, zend_u
 }
 
 void pmmpthread_store_queue_release(pmmpthread_object_t *ts_obj) {
-	zend_hash_index_del(&PMMPTHREAD_ZG(queue_keepalive), (zend_ulong) ts_obj);
+	zend_hash_index_del(&PMMPTHREAD_ZG(queue_keepalive), PMMPTHREAD_PTR_KEY(ts_obj));
 } /* }}} */
 
 static inline zend_bool pmmpthread_store_storage_needs_owner(zval *zstorage) {

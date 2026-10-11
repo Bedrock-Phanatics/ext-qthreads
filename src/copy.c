@@ -676,10 +676,10 @@ static zend_function* pmmpthread_copy_function_ex(const pmmpthread_ident_t* owne
 	}
 
 	if (!(function->op_array.fn_flags & ZEND_ACC_CLOSURE)) {
-		copy = zend_hash_index_find_ptr(&PMMPTHREAD_ZG(resolve), (zend_ulong)function);
+		copy = zend_hash_index_find_ptr(&PMMPTHREAD_ZG(resolve), PMMPTHREAD_PTR_KEY(function));
 	} else {
 		ZEND_ASSERT(function->type == ZEND_USER_FUNCTION);
-		copy = zend_hash_index_find_ptr(&PMMPTHREAD_ZG(closure_base_op_arrays), (zend_ulong)function->op_array.opcodes);
+		copy = zend_hash_index_find_ptr(&PMMPTHREAD_ZG(closure_base_op_arrays), PMMPTHREAD_PTR_KEY(function->op_array.opcodes));
 	}
 
 	if (copy) {
@@ -697,14 +697,14 @@ static zend_function* pmmpthread_copy_function_ex(const pmmpthread_ident_t* owne
 		//closure objects copy their base zend_function, but don't copy the opcodes
 		//this means we can use the opcodes to identify the base op_array a closure should use for zend_create_closure()
 		//instead of creating a bunch of useless copies
-		zend_hash_index_add_ptr(&PMMPTHREAD_ZG(closure_base_op_arrays), (zend_ulong)function->op_array.opcodes, copy);
+		zend_hash_index_add_ptr(&PMMPTHREAD_ZG(closure_base_op_arrays), PMMPTHREAD_PTR_KEY(function->op_array.opcodes), copy);
 
 		//this may be the only place the definition is referenced from - make sure it doesn't get destroyed
 		pmmpthread_add_function_ref(copy);
 
 		pmmpthread_prepare_function_dependencies(owner, copy);
 	} else {
-		zend_hash_index_update_ptr(&PMMPTHREAD_ZG(resolve), (zend_ulong)function, copy);
+		zend_hash_index_update_ptr(&PMMPTHREAD_ZG(resolve), PMMPTHREAD_PTR_KEY(function), copy);
 	}
 
 	return copy;

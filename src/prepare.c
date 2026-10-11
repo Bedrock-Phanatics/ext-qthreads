@@ -202,7 +202,7 @@ static zend_property_info* copy_property_info(
 	zend_class_entry *prepared,
 	const zend_property_info* info
 ) {
-	zend_property_info* dup = zend_hash_index_find_ptr(&PMMPTHREAD_ZG(resolve), (zend_ulong)info);
+	zend_property_info* dup = zend_hash_index_find_ptr(&PMMPTHREAD_ZG(resolve), PMMPTHREAD_PTR_KEY(info));
 	if (dup) {
 		return dup;
 	}
@@ -215,7 +215,7 @@ static zend_property_info* copy_property_info(
 	}
 	memcpy(dup, info, sizeof(zend_property_info));
 
-	zend_hash_index_update_ptr(&PMMPTHREAD_ZG(resolve), (zend_ulong)info, dup);
+	zend_hash_index_update_ptr(&PMMPTHREAD_ZG(resolve), PMMPTHREAD_PTR_KEY(info), dup);
 
 	dup->name = pmmpthread_copy_string(info->name);
 	if (info->doc_comment) {
