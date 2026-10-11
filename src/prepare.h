@@ -23,6 +23,8 @@
 /* {{{ fetch prepared class entry */
 zend_class_entry* pmmpthread_prepare_single_class(const pmmpthread_ident_t* source, zend_class_entry *candidate); /* }}} */
 
+void pmmpthread_prepare_function_dependencies(const pmmpthread_ident_t* source, zend_function* function);
+
 /* {{{ */
 void pmmpthread_prepared_entry_late_bindings(const pmmpthread_ident_t* source, zend_class_entry *candidate, zend_class_entry *prepared); /* }}} */
 

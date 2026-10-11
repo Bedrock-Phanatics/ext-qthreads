@@ -301,6 +301,7 @@ PHP_RINIT_FUNCTION(pmmpthread) {
 
 	PMMPTHREAD_ZG(options) = PMMPTHREAD_INHERIT_ALL;
 	PMMPTHREAD_ZG(connecting_object) = NULL;
+	PMMPTHREAD_ZG(creator_blocked) = 0;
 
 #if HAVE_PMMPTHREAD_EXT_SOCKETS_SUPPORT
 	PMMPTHREAD_ZG(original_socket_object_handlers) = NULL;

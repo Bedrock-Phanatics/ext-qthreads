@@ -71,10 +71,12 @@ static void prepare_class_constants(const pmmpthread_ident_t* source, zend_class
 		name = pmmpthread_copy_string(key);
 
 		if (zc->ce->type == ZEND_INTERNAL_CLASS) {
-			rc = pemalloc(sizeof(zend_class_constant), 1);
-		} else {
-			rc = zend_arena_alloc(&CG(arena), sizeof(zend_class_constant));
+			//process-lifetime and never modified, so share it like zend_do_inheritance() does
+			zend_hash_add_ptr(&prepared->constants_table, name, zc);
+			zend_string_release(name);
+			continue;
 		}
+		rc = zend_arena_alloc(&CG(arena), sizeof(zend_class_constant));
 
 		memcpy(rc, zc, sizeof(zend_class_constant));
 		if (ZEND_CLASS_CONST_FLAGS(zc) & ZEND_CLASS_CONST_IS_CASE && Z_TYPE(zc->value) == IS_OBJECT) {
@@ -398,8 +400,54 @@ while(0)
 #undef SET_FUNC_REF
 } /* }}} */
 
+/* {{{ same as _destroy_zend_class_traits_info() in zend_opcode.c */
+static void free_class_traits(zend_class_entry *prepared) {
+	uint32_t i;
+
+	if (prepared->trait_names) {
+		for (i = 0; i < prepared->num_traits; i++) {
+			zend_string_release(prepared->trait_names[i].name);
+			zend_string_release(prepared->trait_names[i].lc_name);
+		}
+		efree(prepared->trait_names);
+		prepared->trait_names = NULL;
+	}
+	if (prepared->trait_aliases) {
+		for (i = 0; prepared->trait_aliases[i]; i++) {
+			zend_trait_alias *alias = prepared->trait_aliases[i];
+			if (alias->trait_method.method_name) {
+				zend_string_release(alias->trait_method.method_name);
+			}
+			if (alias->trait_method.class_name) {
+				zend_string_release(alias->trait_method.class_name);
+			}
+			if (alias->alias) {
+				zend_string_release(alias->alias);
+			}
+			efree(alias);
+		}
+		efree(prepared->trait_aliases);
+		prepared->trait_aliases = NULL;
+	}
+	if (prepared->trait_precedences) {
+		for (i = 0; prepared->trait_precedences[i]; i++) {
+			zend_trait_precedence *precedence = prepared->trait_precedences[i];
+			zend_string_release(precedence->trait_method.method_name);
+			zend_string_release(precedence->trait_method.class_name);
+			for (uint32_t j = 0; j < precedence->num_excludes; j++) {
+				zend_string_release(precedence->exclude_class_names[j]);
+			}
+			efree(precedence);
+		}
+		efree(prepared->trait_precedences);
+		prepared->trait_precedences = NULL;
+	}
+} /* }}} */
+
 /* {{{ */
 static void prepare_class_traits(zend_class_entry *candidate, zend_class_entry *prepared) {
+	//an unlinked anonymous class gets prepared again once it's linked
+	free_class_traits(prepared);
 
 	if (candidate->num_traits) {
 		unsigned int trait;
@@ -419,7 +467,6 @@ static void prepare_class_traits(zend_class_entry *candidate, zend_class_entry *
 			alias++;
 		}
 
-		//TODO: some stuff may already have been copied, they will leak if this is the second pass on an anonymous class
 		prepared->trait_aliases = emalloc(sizeof(zend_trait_alias*) * (alias+1));
 		alias = 0;
 
@@ -437,7 +484,6 @@ static void prepare_class_traits(zend_class_entry *candidate, zend_class_entry *
 			precedence++;
 		}
 		prepared->trait_precedences = emalloc(sizeof(zend_trait_precedence*) * (precedence+1));
-		//TODO: some stuff may already have been copied, they will leak if this is the second pass on an anonymous class
 		precedence = 0;
 
 		while (candidate->trait_precedences[precedence]) {
@@ -636,6 +682,74 @@ static void pmmpthread_prepare_immutable_class_dependencies(const pmmpthread_ide
 	} ZEND_HASH_FOREACH_END();
 }
 
+static zend_bool prepare_function_dependency(const pmmpthread_ident_t* source, zend_string* lcname) {
+	if (zend_hash_exists(EG(function_table), lcname)) {
+		return 1;
+	}
+	zend_function* original = zend_hash_find_ptr(PMMPTHREAD_CG(source->ls, function_table), lcname);
+	if (original == NULL || original->type != ZEND_USER_FUNCTION) {
+		return 0;
+	}
+	zend_string* key = pmmpthread_copy_string(lcname);
+	zend_function* copy = pmmpthread_copy_function(source, original);
+	//added before recursing, so mutually recursive functions terminate
+	zend_hash_add_new_ptr(EG(function_table), key, copy);
+	zend_string_release(key);
+	pmmpthread_prepare_function_dependencies(source, copy);
+	return 1;
+}
+
+/* {{{ copies what copied code needs but this thread didn't inherit; INIT_FCALL and DECLARE_ANON_CLASS crash without it */
+void pmmpthread_prepare_function_dependencies(const pmmpthread_ident_t* source, zend_function* function) {
+	zend_op_array* op_array;
+	zend_op* opline;
+	zend_op* end;
+
+	if (function->type != ZEND_USER_FUNCTION) {
+		return;
+	}
+	op_array = &function->op_array;
+	end = op_array->opcodes + op_array->last;
+
+	for (opline = op_array->opcodes; opline < end; opline++) {
+		if (opline->opcode == ZEND_INIT_FCALL) {
+			prepare_function_dependency(source, Z_STR_P(RT_CONSTANT(opline, opline->op2)));
+		} else if (opline->opcode == ZEND_DECLARE_ANON_CLASS) {
+			zend_string* key = Z_STR_P(RT_CONSTANT(opline, opline->op1));
+			if (!zend_hash_exists(EG(class_table), key)) {
+				zend_class_entry* original = zend_hash_find_ptr(PMMPTHREAD_CG(source->ls, class_table), key);
+				if (original != NULL) {
+					pmmpthread_create_entry(source, original, 1);
+				}
+			}
+		} else if (!PMMPTHREAD_ZG(creator_blocked)) {
+			//the source's tables may be changing under us; by-name calls fail safely, so only do the ones above which crash
+			continue;
+		} else if (opline->opcode == ZEND_INIT_FCALL_BY_NAME) {
+			prepare_function_dependency(source, Z_STR_P(RT_CONSTANT(opline, opline->op2) + 1));
+		} else if (opline->opcode == ZEND_INIT_NS_FCALL_BY_NAME) {
+			if (!prepare_function_dependency(source, Z_STR_P(RT_CONSTANT(opline, opline->op2) + 1))) {
+				prepare_function_dependency(source, Z_STR_P(RT_CONSTANT(opline, opline->op2) + 2));
+			}
+		}
+	}
+
+	for (uint32_t i = 0; i < op_array->num_dynamic_func_defs; i++) {
+		pmmpthread_prepare_function_dependencies(source, (zend_function*) op_array->dynamic_func_defs[i]);
+	}
+} /* }}} */
+
+static void prepare_class_dependencies(const pmmpthread_ident_t* source, zend_class_entry* prepared) {
+	zend_function* function;
+
+	ZEND_HASH_FOREACH_PTR(&prepared->function_table, function) {
+		//inherited methods were handled with their own class
+		if (function->common.scope == prepared) {
+			pmmpthread_prepare_function_dependencies(source, function);
+		}
+	} ZEND_HASH_FOREACH_END();
+}
+
 /* {{{ */
 static zend_class_entry* pmmpthread_create_entry(const pmmpthread_ident_t* source, zend_class_entry *candidate, int do_late_bindings) {
 	zend_class_entry *prepared = NULL;
@@ -666,10 +780,13 @@ static zend_class_entry* pmmpthread_create_entry(const pmmpthread_ident_t* sourc
 			prepared = NULL;
 		} else {
 			pmmpthread_complete_entry(source, candidate, prepared);
+			//linking added methods (e.g. from traits) which still point at the original class
+			zend_hash_apply_with_arguments(&prepared->function_table, pmmpthread_prepared_entry_function_prepare, 3, source, prepared, candidate);
 			if (do_late_bindings) {
 				//linking might cause new statics and constants to become visible
 				pmmpthread_prepared_entry_late_bindings(source, candidate, prepared);
 			}
+			prepare_class_dependencies(source, prepared);
 		}
 	}
 
@@ -691,6 +808,7 @@ static zend_class_entry* pmmpthread_create_entry(const pmmpthread_ident_t* sourc
 			//this is needed to copy non-default statics from the origin thread
 			pmmpthread_prepared_entry_late_bindings(source, candidate, candidate);
 		}
+		prepare_class_dependencies(source, candidate);
 		return candidate;
 	}
 
@@ -710,6 +828,8 @@ static zend_class_entry* pmmpthread_create_entry(const pmmpthread_ident_t* sourc
 		3, source, prepared, candidate);
 
 	zend_string_release(lookup);
+
+	prepare_class_dependencies(source, prepared);
 
 	return prepared;
 } /* }}} */
@@ -932,6 +1052,7 @@ int pmmpthread_prepared_startup(pmmpthread_object_t* thread, pmmpthread_monitor_
 
 		zend_map_ptr_extend(PMMPTHREAD_CG(thread->creator.ls, map_ptr_last));
 
+		PMMPTHREAD_ZG(creator_blocked) = 1;
 		if (thread_options & PMMPTHREAD_INHERIT_FUNCTIONS)
 			pmmpthread_prepare_functions(&thread->creator);
 
@@ -944,6 +1065,7 @@ int pmmpthread_prepared_startup(pmmpthread_object_t* thread, pmmpthread_monitor_
 
 		if (thread_options & PMMPTHREAD_INHERIT_INCLUDES)
 			pmmpthread_prepare_includes(&thread->creator);
+		PMMPTHREAD_ZG(creator_blocked) = 0;
 
 		pmmpthread_monitor_add(ready, PMMPTHREAD_MONITOR_READY);
 

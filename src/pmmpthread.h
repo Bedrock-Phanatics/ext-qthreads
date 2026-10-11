@@ -122,6 +122,7 @@ ZEND_BEGIN_MODULE_GLOBALS(pmmpthread)
 	HashTable filenames;
 	HashTable closure_base_op_arrays;
 	HashTable queue_keepalive;
+	zend_bool creator_blocked;
 	pmmpthread_zend_object_t* connecting_object;
 	pmmpthread_zend_object_t* thread_shared_globals;
 #if HAVE_PMMPTHREAD_EXT_SOCKETS_SUPPORT

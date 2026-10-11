@@ -701,6 +701,8 @@ static zend_function* pmmpthread_copy_function_ex(const pmmpthread_ident_t* owne
 
 		//this may be the only place the definition is referenced from - make sure it doesn't get destroyed
 		pmmpthread_add_function_ref(copy);
+
+		pmmpthread_prepare_function_dependencies(owner, copy);
 	} else {
 		zend_hash_index_update_ptr(&PMMPTHREAD_ZG(resolve), (zend_ulong)function, copy);
 	}
