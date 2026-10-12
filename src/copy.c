@@ -636,10 +636,14 @@ static inline zend_function* pmmpthread_copy_user_function(const pmmpthread_iden
 	}
 
 	if (copy_static_variables && op_array->static_variables) {
-		if (op_array->refcount) {
+#if PHP_VERSION_ID >= 80200
+		//when opcache owns the op_array, share its template like the rest of it: destroy_op_array() wouldn't free a copy
+		//8.1 still needs a copy, since static_variables_ptr points at this table and it gets written to
+		if (op_array->refcount)
+#endif
+		{
 			op_array->static_variables = pmmpthread_copy_statics(owner, op_array->static_variables);
 		}
-		//otherwise it's owned by opcache like the rest of the op_array, and destroy_op_array() wouldn't free a copy
 	} else {
 		op_array->static_variables = NULL;
 	}
