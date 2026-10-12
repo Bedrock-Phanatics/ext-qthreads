@@ -97,7 +97,8 @@ ThreadSafeQueue_method(pop)
 	while (queue->available == 0 && !(queue->closed && queue->pushing == 0) && timeout != 0) {
 		if (timeout < 0) {
 			pthread_cond_wait(&queue->cond, &queue->mutex);
-		} else if (pthread_cond_timedwait(&queue->cond, &queue->mutex, &deadline) == ETIMEDOUT) {
+		} else if (pthread_cond_timedwait(&queue->cond, &queue->mutex, &deadline) != 0) {
+			//not compared with ETIMEDOUT: pthreads4w and PHP's Windows headers may disagree on its value
 			break;
 		}
 	}

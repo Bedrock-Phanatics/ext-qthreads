@@ -321,10 +321,10 @@ PHP_RINIT_FUNCTION(pmmpthread) {
 }
 
 PHP_RSHUTDOWN_FUNCTION(pmmpthread) {
-	//objects aren't freed yet, so anything this thread stored is still valid here
+	//objects normally aren't freed yet, but opcache preloading frees them before its request shutdown
 	for (uint32_t i = 1; i < EG(objects_store).top; i++) {
 		zend_object* obj = EG(objects_store).object_buckets[i];
-		if (IS_OBJ_VALID(obj) && (obj->handlers == &pmmpthread_ts_ce_handlers || obj->handlers == &pmmpthread_array_ce_handlers || obj->handlers == &pmmpthread_queue_ce_handlers)) {
+		if (IS_OBJ_VALID(obj) && !(OBJ_FLAGS(obj) & IS_OBJ_FREE_CALLED) && (obj->handlers == &pmmpthread_ts_ce_handlers || obj->handlers == &pmmpthread_array_ce_handlers || obj->handlers == &pmmpthread_queue_ce_handlers)) {
 			if (PMMPTHREAD_FETCH_FROM(obj)->ts_obj != NULL) {
 				pmmpthread_store_persist_local_properties(obj);
 			}

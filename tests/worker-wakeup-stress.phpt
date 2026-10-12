@@ -29,6 +29,8 @@ function waitAll(Worker $w) : void{
 $counter = new ThreadSafeArray();
 $counter["n"] = 0;
 $expected = 0;
+//valgrind runs one thread at a time, so only shrink the bulk rounds there to fit run-tests' timeout
+$bulk = getenv("USE_ZEND_ALLOC") === "0" && getenv("USE_TRACKED_ALLOC") === false ? 20 : 1;
 
 $w = new Worker();
 $w->start(Thread::INHERIT_ALL);
@@ -47,7 +49,7 @@ for($i = 0; $i < 300; $i++){
 }
 
 //rapid submissions
-for($i = 0; $i < 20000; $i++){
+for($i = 0; $i < intdiv(20000, $bulk); $i++){
 	$w->stack(new Inc($counter));
 	$expected++;
 	if($i % 1000 === 0){
@@ -57,7 +59,7 @@ for($i = 0; $i < 20000; $i++){
 waitAll($w);
 
 //submissions racing the worker going back to sleep
-for($i = 0; $i < 3000; $i++){
+for($i = 0; $i < intdiv(3000, $bulk); $i++){
 	$w->stack(new Inc($counter));
 	for($j = mt_rand(0, 2000); $j > 0; $j--);
 	$w->stack(new Inc($counter));
@@ -92,12 +94,12 @@ for($i = 0; $i < 50; $i++){
 
 //several threads, each feeding its own worker, all contending on the same counter
 class Producer extends Thread{
-	public function __construct(private ThreadSafeArray $counter){}
+	public function __construct(private ThreadSafeArray $counter, private int $tasks){}
 
 	public function run() : void{
 		$w = new Worker();
 		$w->start(Thread::INHERIT_ALL);
-		for($i = 0; $i < 5000; $i++){
+		for($i = 0; $i < $this->tasks; $i++){
 			$w->stack(new Inc($this->counter));
 			if($i % 500 === 0){
 				$w->collect();
@@ -110,14 +112,14 @@ class Producer extends Thread{
 
 $producers = [];
 for($i = 0; $i < 4; $i++){
-	$p = new Producer($counter);
+	$p = new Producer($counter, intdiv(5000, $bulk));
 	$p->start(Thread::INHERIT_ALL);
 	$producers[] = $p;
 }
 foreach($producers as $p){
 	$p->join();
 }
-$expected += 4 * 5000;
+$expected += 4 * intdiv(5000, $bulk);
 var_dump($counter["n"] === $expected);
 echo "done\n";
 ?>

@@ -636,7 +636,10 @@ static inline zend_function* pmmpthread_copy_user_function(const pmmpthread_iden
 	}
 
 	if (copy_static_variables && op_array->static_variables) {
-		op_array->static_variables = pmmpthread_copy_statics(owner, op_array->static_variables);
+		if (op_array->refcount) {
+			op_array->static_variables = pmmpthread_copy_statics(owner, op_array->static_variables);
+		}
+		//otherwise it's owned by opcache like the rest of the op_array, and destroy_op_array() wouldn't free a copy
 	} else {
 		op_array->static_variables = NULL;
 	}
@@ -793,35 +796,23 @@ zend_result pmmpthread_copy_closure(const pmmpthread_ident_t* owner, zend_closur
 		);
 	} else {
 		HashTable* static_variables = NULL;
-#if PHP_VERSION_ID >= 80200
-		HashTable* static_variables_ptr = NULL;
-#endif
 		if (closure_obj->func.type == ZEND_USER_FUNCTION){
-			if (closure_obj->func.op_array.static_variables != NULL) {
-				//if this is a real closure, we need to update the static_variables from the original closure object
-				//so that the copied closure has the correct use()d variables
-				//this should not modify the original closure
-				//these have to be copied before the closure is created, to maintain the original behaviour
-				static_variables = pmmpthread_copy_statics(owner, closure_obj->func.op_array.static_variables);
-			}
-#if PHP_VERSION_ID >= 80200
-			//in PHP 8.5, the static_variables field is not overwritten when creating a new closure, so it may be different
-			//than the static_variables_ptr, which will typically contain bound variables
-			HashTable *origin_static_variables_ptr = ZEND_MAP_PTR_GET(closure_obj->func.op_array.static_variables_ptr);
-			if (origin_static_variables_ptr != NULL) {
-				if (origin_static_variables_ptr != closure_obj->func.op_array.static_variables) {
-					static_variables_ptr = pmmpthread_copy_statics(owner, origin_static_variables_ptr);
-				} else {
-					static_variables_ptr = static_variables;
-				}
-			}
+			//copy the original closure's use()d variables without modifying it
+			//these have to be copied before the closure is created, to maintain the original behaviour
+#if PHP_VERSION_ID >= 80500
+			//since 8.5 a closure only owns its bound table; static_variables is the definition's template, freed with the shared op_array
+			HashTable* bound = ZEND_MAP_PTR_GET(closure_obj->func.op_array.static_variables_ptr);
+#else
+			HashTable* bound = closure_obj->func.op_array.static_variables;
 #endif
+			if (bound != NULL) {
+				static_variables = pmmpthread_copy_statics(owner, bound);
+			}
 		}
 
 		//we don't know where the definition for this closure is, so create a definition from this copy of it
-		//assume there are no real static variables and don't copy them from this definition (thread-safe
-		//closures are not allowed to have static variables anyway)
-		func_def = pmmpthread_copy_function_ex(owner, &closure_obj->func, 0);
+		//before 8.5 the closure's static_variables are its bound variables, so they mustn't go into the definition
+		func_def = pmmpthread_copy_function_ex(owner, &closure_obj->func, PHP_VERSION_ID >= 80500);
 
 		zend_create_closure(
 			pzval,
@@ -837,11 +828,13 @@ zend_result pmmpthread_copy_closure(const pmmpthread_ident_t* owner, zend_closur
 				//the closure may have static_variables allocated from its original creation by zend_compile.c
 				zend_array_release(ZEND_MAP_PTR_GET(new_closure->func.op_array.static_variables_ptr));
 			}
+#if PHP_VERSION_ID < 80500
 			new_closure->func.op_array.static_variables = static_variables;
+#endif
 #if PHP_VERSION_ID >= 80200
 			ZEND_MAP_PTR_INIT(
 				new_closure->func.op_array.static_variables_ptr,
-				static_variables_ptr
+				static_variables
 			);
 #else
 			//this is not strictly necessary for 8.1, but is here for the sake of completeness

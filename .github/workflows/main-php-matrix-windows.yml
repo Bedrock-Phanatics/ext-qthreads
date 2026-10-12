@@ -238,7 +238,19 @@ jobs:
         run: |
           $env:REPORT_EXIT_STATUS=1
 
-          .\php.exe .\SDK\script\run-tests.php -P -q --show-diff --show-slow 30000 -n -c .\php.ini ${{ github.workspace }}\tests
+          # run-tests can't time out tests on Windows (stream_select() doesn't work on pipes), so a hung test would stall
+          # the whole job and keep its generated files locked; kill it instead so it's reported as a failure
+          $runner = Start-Process .\php.exe -ArgumentList ".\SDK\script\run-tests.php -P -q --show-diff --show-slow 30000 -n -c .\php.ini ${{ github.workspace }}\tests" -NoNewWindow -PassThru
+          $null = $runner.Handle
+          while (!$runner.WaitForExit(5000)) {
+            Get-CimInstance Win32_Process -Filter "Name='php.exe'" |
+              Where-Object { $_.ProcessId -ne $runner.Id -and $_.CreationDate -lt (Get-Date).AddSeconds(-180) } |
+              ForEach-Object {
+                echo "Killing hung test process $($_.ProcessId): $($_.CommandLine)"
+                Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
+              }
+          }
+          exit $runner.ExitCode
 
       - name: Upload test results
         if: always()

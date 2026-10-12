@@ -331,7 +331,8 @@ static void pmmpthread_base_ctor(pmmpthread_zend_object_t* base, zend_class_entr
 	}
 	zend_hash_index_add_ptr(&PMMPTHREAD_ZG(resolve), PMMPTHREAD_PTR_KEY(base->ts_obj), base);
 
-	base->local_props_modcount = base->ts_obj->props.modcount - 1;
+	//modcount only counts up from 0, so this forces the first sync without reading it outside the monitor
+	base->local_props_modcount = -1;
 } /* }}} */
 
 /* {{{ */

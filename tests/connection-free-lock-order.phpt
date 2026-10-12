@@ -29,17 +29,21 @@ class Merger extends Thread{
 		for($i = 0; $this->boxes->count() > 0; $i++){
 			$this->x->merge(["nested" => [$i, [$i]], "k" . ($i % 8) => [1]]);
 		}
+		//the arrays we created die when we're joined, which would break syncing $x when joining the other Merger
+		$this->x->merge(["nested" => 0, "k0" => 0, "k1" => 0, "k2" => 0, "k3" => 0, "k4" => 0, "k5" => 0, "k6" => 0, "k7" => 0]);
 	}
 }
 
+//valgrind runs one thread at a time, so use fewer boxes there to fit run-tests' timeout
+$n = getenv("USE_ZEND_ALLOC") === "0" && getenv("USE_TRACKED_ALLOC") === false ? 1000 : 20000;
 $x = new ThreadSafeArray();
 $boxes = new ThreadSafeArray();
-for($i = 0; $i < 20000; $i++){
+for($i = 0; $i < $n; $i++){
 	$box = new ThreadSafeArray();
 	$box["x"] = $x;
 	$boxes[] = $box;
 }
-$keep = $boxes->chunk(20000, true);
+$keep = $boxes->chunk($n, true);
 foreach($keep as $box){
 	$boxes[] = $box;
 }
