@@ -34,8 +34,9 @@ class Merger extends Thread{
 	}
 }
 
-//valgrind runs one thread at a time, so use fewer boxes there to fit run-tests' timeout
-$n = getenv("USE_ZEND_ALLOC") === "0" && getenv("USE_TRACKED_ALLOC") === false ? 1000 : 20000;
+//valgrind runs one thread at a time, and Windows' mutexes let the spinning Mergers starve the Droppers,
+//so use fewer boxes there to fit the test timeouts
+$n = getenv("USE_ZEND_ALLOC") === "0" && getenv("USE_TRACKED_ALLOC") === false ? 1000 : (PHP_OS_FAMILY === "Windows" ? 5000 : 20000);
 $x = new ThreadSafeArray();
 $boxes = new ThreadSafeArray();
 for($i = 0; $i < $n; $i++){

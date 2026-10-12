@@ -250,7 +250,7 @@ jobs:
               ForEach-Object {
                 echo "Killing hung test process $($_.ProcessId): $($_.CommandLine)"
                 if (Test-Path $cdb) {
-                  & $cdb -p $_.ProcessId -c "~*k 30; qd" 2>&1 | Select-String -Pattern "^\s*[0-9a-f]{2} |^\s*#? *\d+\s+Id:" | Select-Object -First 200 | ForEach-Object { $_.Line }
+                  & $cdb -p $_.ProcessId -c "~*k 30; qd" 2>&1 | ForEach-Object { "$_" } | Where-Object { $_ -notmatch "^(ModLoad|\*\*\*|Symbol search|Executable search|Microsoft|Copyright|CommandLine)" } | Select-Object -First 400
                 }
                 Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
               }
