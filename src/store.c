@@ -986,6 +986,7 @@ static pmmpthread_storage* pmmpthread_store_create(pmmpthread_ident_t* source, z
 				}
 				storage->closure = closure;
 				storage->owner = *source;
+				pmmpthread_exports_publish();
 				break;
 			}
 
@@ -993,6 +994,7 @@ static pmmpthread_storage* pmmpthread_store_create(pmmpthread_ident_t* source, z
 				pmmpthread_zend_object_t *threaded = PMMPTHREAD_FETCH_FROM(Z_OBJ_P(unstore));
 				MAKE_STORAGE(STORE_TYPE_THREADSAFE_OBJECT, pmmpthread_zend_object_storage_t);
 				storage->object = threaded;
+				pmmpthread_exports_publish();
 				break;
 			}
 

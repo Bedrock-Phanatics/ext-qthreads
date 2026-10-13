@@ -17,6 +17,7 @@
  */
 
 #include <src/pmmpthread.h>
+#include <src/prepare.h>
 
 #define Worker_method(name) PHP_METHOD(pmmp_thread_Worker, name)
 
@@ -40,6 +41,7 @@ Worker_method(stack)
 			thread->std.ce->name->val);
 		return;
 	}
+	pmmpthread_exports_publish();
 	zend_long size = pmmpthread_worker_add_task(thread->worker_data, work);
 	if (size < 0) {
 		zend_throw_exception_ex(

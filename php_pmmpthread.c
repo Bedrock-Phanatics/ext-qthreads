@@ -19,6 +19,7 @@
 #include <src/pmmpthread.h>
 #include <src/object.h>
 #include <src/globals.h>
+#include <src/prepare.h>
 
 #include <stubs/Pool_arginfo.h>
 #include <stubs/Thread_arginfo.h>
@@ -253,6 +254,7 @@ PHP_MSHUTDOWN_FUNCTION(pmmpthread)
 ZEND_MODULE_POST_ZEND_DEACTIVATE_D(pmmpthread)
 {
 	zend_hash_destroy(&PMMPTHREAD_ZG(resolve));
+	pmmpthread_exports_destroy();
 
 	return SUCCESS;
 }
@@ -301,7 +303,8 @@ PHP_RINIT_FUNCTION(pmmpthread) {
 
 	PMMPTHREAD_ZG(options) = PMMPTHREAD_INHERIT_ALL;
 	PMMPTHREAD_ZG(connecting_object) = NULL;
-	PMMPTHREAD_ZG(creator_blocked) = 0;
+	PMMPTHREAD_ZG(blocked_creator) = NULL;
+	pmmpthread_exports_init();
 
 #if HAVE_PMMPTHREAD_EXT_SOCKETS_SUPPORT
 	PMMPTHREAD_ZG(original_socket_object_handlers) = NULL;

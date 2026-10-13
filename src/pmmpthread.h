@@ -125,16 +125,18 @@ ZEND_BEGIN_MODULE_GLOBALS(pmmpthread)
 	HashTable filenames;
 	HashTable closure_base_op_arrays;
 	HashTable queue_keepalive;
-	zend_bool creator_blocked;
+	void*** blocked_creator;
 	pmmpthread_zend_object_t* connecting_object;
 	pmmpthread_zend_object_t* thread_shared_globals;
 #if HAVE_PMMPTHREAD_EXT_SOCKETS_SUPPORT
 	zend_object_handlers *original_socket_object_handlers;
 	zend_object_handlers custom_socket_object_handlers;
 #endif
+	struct _pmmpthread_exports_t* exports;
 ZEND_END_MODULE_GLOBALS(pmmpthread)
 
 #define PMMPTHREAD_ZG(v) TSRMG(pmmpthread_globals_id, zend_pmmpthread_globals *, v)
+#define PMMPTHREAD_ZG_EX(ls, v) PMMPTHREAD_FETCH_CTX(ls, pmmpthread_globals_id, zend_pmmpthread_globals*, v)
 
 #define PMMPTHREAD_FETCH_ALL(ls, id, type) ((type) (*((void ***) ls))[TSRM_UNSHUFFLE_RSRC_ID(id)])
 #define PMMPTHREAD_FETCH_CTX(ls, id, type, element) (((type) (*((void ***) ls))[TSRM_UNSHUFFLE_RSRC_ID(id)])->element)
