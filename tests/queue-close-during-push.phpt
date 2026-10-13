@@ -61,10 +61,11 @@ for($i = 0; $i < 10; $i++){
 		}
 	});
 	$q->close();
-	$pusher->join();
+	//the pushed array dies with the pusher, so it has to outlive the consumers
 	foreach($consumers as $t){
 		$t->join();
 	}
+	$pusher->join();
 	if($state["popped"] > 1){
 		echo "popped ", $state["popped"], "\n";
 	}
