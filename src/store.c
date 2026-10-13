@@ -1506,6 +1506,16 @@ static void pmmpthread_queue_keepalive_prune(pmmpthread_object_t *ts_obj, zend_u
 
 void pmmpthread_store_queue_release(pmmpthread_object_t *ts_obj) {
 	zend_hash_index_del(&PMMPTHREAD_ZG(queue_keepalive), PMMPTHREAD_PTR_KEY(ts_obj));
+}
+
+//lets the GC see through the keepalive, so pushing a queue into itself (directly or not) can be collected
+void pmmpthread_store_queue_gc(pmmpthread_object_t *ts_obj, zend_get_gc_buffer *buffer) {
+	pmmpthread_queue_keepalive_t *keepalive = zend_hash_index_find_ptr(&PMMPTHREAD_ZG(queue_keepalive), PMMPTHREAD_PTR_KEY(ts_obj));
+	if (keepalive != NULL) {
+		for (uint32_t i = 0; i < keepalive->count; i++) {
+			zend_get_gc_buffer_add_zval(buffer, &keepalive->items[(keepalive->head + i) % keepalive->size].value);
+		}
+	}
 } /* }}} */
 
 static inline zend_bool pmmpthread_store_storage_needs_owner(zval *zstorage) {
@@ -1531,7 +1541,10 @@ zend_result pmmpthread_store_queue_push(zend_object *object, zval *value) {
 		value = &coerced;
 	}
 
-	if (pmmpthread_store_save_zval(&threaded->owner, &zstorage, value) == FAILURE) {
+	if (Z_TYPE_P(value) == IS_STRING) {
+		//copied now so consumed strings don't stay pinned in the pusher's keepalive
+		ZVAL_STR(&zstorage, pmmpthread_store_save_string(Z_STR_P(value)));
+	} else if (pmmpthread_store_save_zval(&threaded->owner, &zstorage, value) == FAILURE) {
 		zval_ptr_dtor(&coerced);
 		return FAILURE;
 	}

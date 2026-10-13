@@ -51,14 +51,15 @@ final class Channel{
 }
 
 class Producer extends Thread{
-	public function __construct(private ThreadSafeArray|ThreadSafeQueue $c, private int $n, private bool $paced){}
+	public function __construct(private ThreadSafeArray|ThreadSafeQueue $c, private int $n, private bool $paced, private int $payload){}
 
 	public function run() : void{
+		$pad = ":" . str_repeat("x", $this->payload);
 		for($i = 0; $i < $this->n; $i++){
 			if($this->paced){
 				usleep(200);
 			}
-			Channel::push($this->c, hrtime(true));
+			Channel::push($this->c, $this->payload > 0 ? hrtime(true) . $pad : hrtime(true));
 		}
 	}
 }
@@ -69,7 +70,7 @@ class Consumer extends Thread{
 	public function run() : void{
 		$latency = [];
 		while(($v = Channel::pop($this->c)) !== null){
-			$latency[] = hrtime(true) - $v;
+			$latency[] = hrtime(true) - (int) $v;
 		}
 		$this->out->synchronized(function() use ($latency) : void{
 			$this->out[] = ThreadSafeArray::fromArray($latency);
@@ -77,14 +78,15 @@ class Consumer extends Thread{
 	}
 }
 
-[, $impl, $mode, $producers, $consumers] = $argv + [null, "", "", 1, 1];
+[, $impl, $mode, $producers, $consumers, $payload] = $argv + [null, "", "", 1, 1, 0];
+$payload = (int) $payload;
 $producers = (int) $producers;
 $consumers = (int) $consumers;
 if(!in_array($impl, ["queue", "array"], true) || !in_array($mode, ["throughput", "latency"], true) || $producers < 1 || $consumers < 1){
 	fwrite(STDERR, "usage: queue.php <queue|array> <throughput|latency> <producers> <consumers>\n");
 	exit(1);
 }
-$items = $mode === "latency" ? 4000 : 400_000;
+$items = $mode === "latency" ? 4000 : ($payload >= 1024 ? 100_000 : 400_000);
 
 $c = $impl === "queue" ? new ThreadSafeQueue() : new ThreadSafeArray();
 $out = new ThreadSafeArray();
@@ -97,7 +99,7 @@ for($i = 0; $i < $consumers; $i++){
 }
 $producerThreads = [];
 for($i = 0; $i < $producers; $i++){
-	$producerThreads[] = $t = new Producer($c, intdiv($items, $producers), $mode === "latency");
+	$producerThreads[] = $t = new Producer($c, intdiv($items, $producers), $mode === "latency", $payload);
 	$t->start(Thread::INHERIT_ALL);
 }
 foreach($producerThreads as $t){
@@ -115,7 +117,7 @@ foreach($out as $samples){
 		$latency[] = $ns / 1e3;
 	}
 }
-report("$impl-$mode-{$producers}x$consumers", [
+report("$impl-$mode-{$producers}x$consumers" . ($payload > 0 ? "-{$payload}b" : ""), [
 	"ops_s" => count($latency) / $wall,
 	"p50_us" => percentile($latency, .5),
 	"p95_us" => percentile($latency, .95),

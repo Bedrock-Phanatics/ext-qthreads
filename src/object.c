@@ -432,6 +432,10 @@ HashTable* pmmpthread_base_gc(zend_object *object, zval **table, int *n) {
 	if (threaded->worker_data != NULL) {
 		zend_get_gc_buffer* buffer = pmmpthread_worker_get_gc_extra(threaded->worker_data);
 		zend_get_gc_buffer_use(buffer, table, n);
+	} else if (threaded->ts_obj != NULL && PMMPTHREAD_IS_QUEUE(threaded)) {
+		zend_get_gc_buffer* buffer = zend_get_gc_buffer_create();
+		pmmpthread_store_queue_gc(threaded->ts_obj, buffer);
+		zend_get_gc_buffer_use(buffer, table, n);
 	} else {
 		*table = NULL;
 		*n = 0;

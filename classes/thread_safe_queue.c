@@ -49,10 +49,12 @@ ThreadSafeQueue_method(push)
 	queue->pushing--;
 	if (result == SUCCESS) {
 		queue->available++;
-		pthread_cond_signal(&queue->cond);
-	} else if (queue->closed && queue->pushing == 0) {
+	}
+	if (queue->closed && queue->pushing == 0) {
 		//consumers may be waiting for this push before giving up on a closed queue
 		pthread_cond_broadcast(&queue->cond);
+	} else if (result == SUCCESS) {
+		pthread_cond_signal(&queue->cond);
 	}
 	pthread_mutex_unlock(&queue->mutex);
 

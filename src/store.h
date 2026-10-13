@@ -54,6 +54,7 @@ struct _pmmpthread_object_t;
 zend_result pmmpthread_store_queue_push(zend_object *object, zval *value);
 zend_result pmmpthread_store_queue_shift(zend_object *object, zval *value);
 void pmmpthread_store_queue_release(struct _pmmpthread_object_t *ts_obj);
+void pmmpthread_store_queue_gc(struct _pmmpthread_object_t *ts_obj, zend_get_gc_buffer *buffer);
 void pmmpthread_store_queue_keepalive_dtor(zval *zv);
 /* {{{ Copies any thread-local data to permanent storage when an object ref is destroyed */
 void pmmpthread_store_persist_local_properties(zend_object* object); /* }}} */

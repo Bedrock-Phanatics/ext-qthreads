@@ -37,6 +37,8 @@ const CASES = [
 	["queue.php", "array", "throughput", "4", "4"],
 	["queue.php", "queue", "latency", "1", "1"],
 	["queue.php", "array", "latency", "1", "1"],
+	["queue.php", "queue", "throughput", "1", "1", "64"],
+	["queue.php", "queue", "throughput", "4", "4", "16384"],
 	["startup.php", "all"],
 	["startup.php", "none"],
 	["rss.php", "40"],
