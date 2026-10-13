@@ -42,6 +42,12 @@ const CASES = [
 	["startup.php", "all"],
 	["startup.php", "none"],
 	["rss.php", "40"],
+	["quark.php", "async", "1"],
+	["quark.php", "async", "2"],
+	["quark.php", "async", "4"],
+	["quark.php", "chunk", "1"],
+	["quark.php", "chunk", "2"],
+	["quark.php", "chunk", "4"],
 ];
 
 $opts = getopt("", ["ext:", "php:", "reps:", "only:", "cpus:", "perf", "ini:"]);
