@@ -51,6 +51,11 @@ opcache.enable_cli=1
 ```
 to your `php.ini` file.
 
+## Worker spinning
+Waking a sleeping `Worker` costs the thread submitting the task a syscall, which can take longer than a small task itself, especially in VMs. So a worker which keeps getting tasks shortly after running out stays awake for a while before sleeping, adapting to how soon tasks usually arrive.
+
+`pmmpthread.worker_spin_us` (default `200`, `php.ini` only) is the longest a worker will stay awake like this. Set it to `0` to always sleep right away, which uses less CPU when workers get a task every couple hundred microseconds, at the cost of throughput.
+
 ## Why not drop pmmpthread and move on to something newer and easier to work with, like [krakjoe/parallel](https://github.com/krakjoe/parallel)?
 - We found parallel too limited for the use cases we needed it for. If it had some thread-safe class base like `Threaded` (`ThreadedBase` or `ThreadSafe` in newer versions), it might be more usable.
 - It's possible to implement parallel's API using pthreads/pmmpthread, but not the other way round.

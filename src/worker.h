@@ -38,6 +38,8 @@
 typedef struct _pmmpthread_worker_data_t pmmpthread_worker_data_t;
 typedef zend_bool (*pmmpthread_worker_collect_function_t) (pmmpthread_call_t *call, zval *value);
 
+extern uint64_t pmmpthread_worker_spin_max_ns;
+
 pmmpthread_worker_data_t* pmmpthread_worker_data_alloc(pmmpthread_monitor_t *monitor);
 zend_long pmmpthread_worker_task_queue_size(pmmpthread_worker_data_t *worker_data);
 void pmmpthread_worker_data_free(pmmpthread_worker_data_t *worker_data);

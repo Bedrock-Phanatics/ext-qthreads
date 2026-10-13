@@ -128,6 +128,10 @@ static inline void pmmpthread_globals_ctor(zend_pmmpthread_globals *pg) {
 	ZVAL_UNDEF(&pg->this);
 }
 
+PHP_INI_BEGIN()
+	PHP_INI_ENTRY("pmmpthread.worker_spin_us", "200", PHP_INI_SYSTEM, NULL)
+PHP_INI_END()
+
 PHP_MINIT_FUNCTION(pmmpthread)
 {
 	if (!pmmpthread_is_supported_sapi(sapi_module.name)) {
@@ -135,6 +139,14 @@ PHP_MINIT_FUNCTION(pmmpthread)
 			sapi_module.name);
 		return FAILURE;
 	}
+
+	REGISTER_INI_ENTRIES();
+	zend_long spin_us = INI_INT("pmmpthread.worker_spin_us");
+	if (spin_us < 0 || spin_us > 10000) {
+		zend_error(E_WARNING, "pmmpthread.worker_spin_us must be between 0 and 10000, using 0");
+		spin_us = 0;
+	}
+	pmmpthread_worker_spin_max_ns = (uint64_t) spin_us * 1000;
 
 	pmmpthread_ce_thread_safe = register_class_pmmp_thread_ThreadSafe(zend_ce_aggregate);
 	pmmpthread_ce_thread_safe->create_object = pmmpthread_threaded_base_ctor;
@@ -240,6 +252,8 @@ static inline int sapi_cli_deactivate(void)
 
 PHP_MSHUTDOWN_FUNCTION(pmmpthread)
 {
+	UNREGISTER_INI_ENTRIES();
+
 	if (pmmpthread_instance == TSRMLS_CACHE) {
 		pmmpthread_globals_shutdown();
 
@@ -355,4 +369,6 @@ PHP_MINFO_FUNCTION(pmmpthread)
 	php_info_print_table_start();
 	php_info_print_table_row(2, "Version", PHP_PMMPTHREAD_VERSION);
 	php_info_print_table_end();
+
+	DISPLAY_INI_ENTRIES();
 }
