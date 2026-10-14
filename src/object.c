@@ -299,6 +299,13 @@ static pmmpthread_object_t* pmmpthread_ts_object_ctor(unsigned int scope) {
 			free(ts_obj);
 			return NULL;
 		}
+		if (pthread_mutex_init(&queue->items, NULL) != 0) {
+			pthread_cond_destroy(&queue->cond);
+			pthread_mutex_destroy(&queue->mutex);
+			pmmpthread_monitor_destroy(&ts_obj->monitor);
+			free(ts_obj);
+			return NULL;
+		}
 	}
 	ts_obj->scope = scope;
 	ts_obj->refcount = 1;
@@ -367,6 +374,7 @@ static void pmmpthread_ts_object_free(pmmpthread_zend_object_t* base) {
 		//nobody can be waiting, since waiters hold a ref
 		pthread_mutex_destroy(&((pmmpthread_queue_object_t*) ts_obj)->mutex);
 		pthread_cond_destroy(&((pmmpthread_queue_object_t*) ts_obj)->cond);
+		pthread_mutex_destroy(&((pmmpthread_queue_object_t*) ts_obj)->items);
 	}
 
 	free(ts_obj);

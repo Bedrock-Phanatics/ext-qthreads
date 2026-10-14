@@ -864,8 +864,9 @@ void pmmpthread_store_tohash(zend_object *object, HashTable *hash) {
 void pmmpthread_store_persist_local_properties(zend_object* object) {
 	pmmpthread_zend_object_t* threaded = PMMPTHREAD_FETCH_FROM(object);
 	pmmpthread_object_t* ts_obj = threaded->ts_obj;
+	pthread_mutex_t* lock = PMMPTHREAD_IS_QUEUE(threaded) ? &((pmmpthread_queue_object_t*)ts_obj)->items : &ts_obj->monitor.mutex;
 
-	if (pmmpthread_monitor_lock(&ts_obj->monitor)) {
+	if (pthread_mutex_lock(lock) == 0) {
 		zval *zstorage;
 		ZEND_HASH_FOREACH_VAL(&ts_obj->props.hash, zstorage) {
 			pmmpthread_storage* storage = TRY_PMMPTHREAD_STORAGE_PTR_P(zstorage);
@@ -891,7 +892,7 @@ void pmmpthread_store_persist_local_properties(zend_object* object) {
 			}
 		} ZEND_HASH_FOREACH_END();
 
-		pmmpthread_monitor_unlock(&ts_obj->monitor);
+		pthread_mutex_unlock(lock);
 	}
 } /* }}} */
 
@@ -1554,15 +1555,11 @@ zend_result pmmpthread_store_queue_push(zend_object *object, zval *value) {
 	//a consumer may free the storage as soon as it's queued
 	needs_owner = pmmpthread_store_storage_needs_owner(&zstorage);
 
-	if (!pmmpthread_monitor_lock(&queue->base.monitor)) {
-		pmmpthread_store_storage_dtor(&zstorage);
-		zval_ptr_dtor(&coerced);
-		return FAILURE;
-	}
+	pthread_mutex_lock(&queue->items);
 	seq = queue->tail++;
 	zend_hash_index_add_new(&queue->base.props.hash, seq, &zstorage);
 	head = queue->head;
-	pmmpthread_monitor_unlock(&queue->base.monitor);
+	pthread_mutex_unlock(&queue->items);
 
 	if (needs_owner) {
 		pmmpthread_queue_keepalive_add(&queue->base, seq, value);
@@ -1580,10 +1577,7 @@ zend_result pmmpthread_store_queue_shift(zend_object *object, zval *value) {
 	zend_bool needs_owner;
 	zend_ulong head;
 
-	if (!pmmpthread_monitor_lock(&queue->base.monitor)) {
-		ZVAL_NULL(value);
-		return FAILURE;
-	}
+	pthread_mutex_lock(&queue->items);
 	found = zend_hash_index_find(&queue->base.props.hash, queue->head);
 	ZEND_ASSERT(found != NULL);
 	ZVAL_COPY_VALUE(&zstorage, found);
@@ -1596,7 +1590,7 @@ zend_result pmmpthread_store_queue_shift(zend_object *object, zval *value) {
 	if (needs_owner) {
 		pmmpthread_store_restore_zval(value, &zstorage);
 	}
-	pmmpthread_monitor_unlock(&queue->base.monitor);
+	pthread_mutex_unlock(&queue->items);
 
 	if (!needs_owner) {
 		//may autoload enum classes, so not under the lock

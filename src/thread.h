@@ -42,7 +42,8 @@ typedef struct _pmmpthread_object_t {
 /* {{{ */
 typedef struct _pmmpthread_queue_object_t {
 	pmmpthread_object_t base;
-	//items are in base.props keyed by sequence number; head/tail are guarded by base.monitor
+	//items are in base.props keyed by sequence number; they and head/tail are guarded by items, not base.monitor, so pop() can block inside synchronized()
+	pthread_mutex_t items;
 	zend_ulong head;
 	zend_ulong tail;
 	//only for waiting; never held with another lock or while running PHP code
