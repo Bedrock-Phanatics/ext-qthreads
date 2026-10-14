@@ -171,7 +171,7 @@ zend_long pmmpthread_worker_collect_tasks(pmmpthread_worker_data_t *worker_data,
 	}
 	if (worker_data->collecting) {
 		//called from a collector; collecting here too would mess up the order the worker frees its connections in
-		size = (worker_data->queue.size + worker_data->gc.size) + (worker_data->running != NULL ? 1 : 0);
+		size = (worker_data->queue.size + worker_data->gc.size + worker_data->collecting->size) + (worker_data->running != NULL ? 1 : 0);
 		pmmpthread_monitor_unlock(worker_data->monitor);
 		return size;
 	}
