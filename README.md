@@ -1,10 +1,10 @@
-# Threading for PHP - Share Nothing, Do Everything :)
+# qthreads - Threading for PHP
 
-[![CI](https://github.com/pmmp/ext-pmmpthread/actions/workflows/main.yml/badge.svg)](https://github.com/pmmp/ext-pmmpthread/actions/workflows/main.yml)
+[![CI](https://github.com/Bedrock-Phanatics/ext-qthreads/actions/workflows/main.yml/badge.svg)](https://github.com/Bedrock-Phanatics/ext-qthreads/actions/workflows/main.yml)
 
-This project provides limited support for threading in PHP CLI.
+qthreads is Quark's fork of [pmmp/ext-pmmpthread](https://github.com/pmmp/ext-pmmpthread), which itself is a fork of the now-abandoned [krakjoe/pthreads](https://github.com/krakjoe/pthreads) extension. It provides limited support for threading in PHP CLI.
 
-This is a fork of the now-abandoned [krakjoe/pthreads](https://github.com/krakjoe/pthreads) extension.
+It's a drop-in replacement: the extension is still loaded as `pmmpthread`, and the API is still in the `pmmp\thread` namespace, so existing code and `ext-pmmpthread` requirements keep working.
 
 ## Managing expectations
 
@@ -21,7 +21,14 @@ Documentation can be found in the `.stub.php` files  `stubs` folder, and some ex
 Legacy documentation for pthreads v2/v3 can be found [here](http://docs.php.net/manual/en/book.pthreads.php).
 
 ## Fork focus
-This fork is used in production on thousands of [PocketMine-MP](https://github.com/pmmp/PocketMine-MP) servers worldwide. Therefore, the focus is on performance and stability.
+pmmpthread is used in production on thousands of [PocketMine-MP](https://github.com/pmmp/PocketMine-MP) servers worldwide, and qthreads is built for Quark. The focus is on performance and stability.
+
+## Changes in qthreads
+- `ThreadSafeQueue`, a FIFO queue for passing values between threads without `synchronized()` loops
+- Much faster `Pool`/`Worker` task submission and collection, especially with several workers (see [Worker spinning](#worker-spinning))
+- Faster `ThreadSafeArray` merges, object creation and connections
+- Fixes for crashes when copying classes and functions from a thread that's still declaring new ones, and for several races, deadlocks and leaks
+- Sanitizer CI and a benchmark suite in `bench/`
 
 ## Changes compared to the original
 - PHP 8.1 and 8.2 support
