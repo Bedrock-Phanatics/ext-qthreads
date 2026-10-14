@@ -662,6 +662,7 @@ typedef struct _pmmpthread_exports_t {
 	pthread_mutex_t lock;
 	pmmpthread_exported_table_t functions;
 	pmmpthread_exported_table_t classes;
+	size_t map_ptr_last; //copies of exported classes may refer to map ptr slots up to here
 } pmmpthread_exports_t;
 
 void pmmpthread_exports_init(void) {
@@ -714,14 +715,35 @@ void pmmpthread_exports_publish(void) {
 	pmmpthread_exports_t* exports = PMMPTHREAD_ZG(exports);
 	if (
 		exports == NULL ||
-		(pmmpthread_exports_current(&exports->functions, CG(function_table)) && pmmpthread_exports_current(&exports->classes, CG(class_table)))
+		(
+			exports->map_ptr_last == CG(map_ptr_last) &&
+			pmmpthread_exports_current(&exports->functions, CG(function_table)) &&
+			pmmpthread_exports_current(&exports->classes, CG(class_table))
+		)
 	) {
 		return;
 	}
 	pthread_mutex_lock(&exports->lock);
 	pmmpthread_exports_add(&exports->functions, CG(function_table), ZEND_USER_FUNCTION);
 	pmmpthread_exports_add(&exports->classes, CG(class_table), ZEND_USER_CLASS);
+	exports->map_ptr_last = CG(map_ptr_last);
 	pthread_mutex_unlock(&exports->lock);
+}
+
+static size_t pmmpthread_exports_map_ptr_last(const pmmpthread_ident_t* source) {
+	size_t result = 0;
+
+	if (source->ls == TSRMLS_CACHE || source->ls == PMMPTHREAD_ZG(blocked_creator)) {
+		return PMMPTHREAD_CG(source->ls, map_ptr_last);
+	}
+
+	pmmpthread_exports_t* exports = PMMPTHREAD_ZG_EX(source->ls, exports);
+	if (exports != NULL) {
+		pthread_mutex_lock(&exports->lock);
+		result = exports->map_ptr_last;
+		pthread_mutex_unlock(&exports->lock);
+	}
+	return result;
 }
 
 static void* pmmpthread_exports_find(const pmmpthread_ident_t* source, zend_bool classes, zend_string* key) {
@@ -888,7 +910,7 @@ static zend_class_entry* pmmpthread_create_entry(const pmmpthread_ident_t* sourc
 	}
 
 	//this has to be synchronized every time we copy a new class after initial thread bootup, in case new immutable classes want to refer to new offsets in it
-	zend_map_ptr_extend(PMMPTHREAD_CG(source->ls, map_ptr_last));
+	zend_map_ptr_extend(pmmpthread_exports_map_ptr_last(source));
 
 	if (candidate->ce_flags & ZEND_ACC_IMMUTABLE) {
 		//IMMUTABLE classes don't need to be copied and should not be modified

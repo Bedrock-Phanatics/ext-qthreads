@@ -33,6 +33,14 @@
 #endif
 
 //only a hint, the queue itself is always checked under the monitor
+#ifdef HAVE_VALGRIND
+#	include <valgrind/drd.h>
+#	define PMMPTHREAD_HINT_INIT(p) DRD_IGNORE_VAR(*(p))
+#	define PMMPTHREAD_HINT_DESTROY(p) DRD_STOP_IGNORING_VAR(*(p))
+#else
+#	define PMMPTHREAD_HINT_INIT(p) ((void) 0)
+#	define PMMPTHREAD_HINT_DESTROY(p) ((void) 0)
+#endif
 #ifdef _MSC_VER
 #	define PMMPTHREAD_HINT_LOAD(p) (*(volatile zend_bool*) (p))
 #	define PMMPTHREAD_HINT_STORE(p, v) (*(volatile zend_bool*) (p) = (v))
@@ -71,6 +79,7 @@ pmmpthread_worker_data_t* pmmpthread_worker_data_alloc(pmmpthread_monitor_t *mon
 	pmmpthread_worker_data_t *stack =
 		(pmmpthread_worker_data_t*) ecalloc(1, sizeof(pmmpthread_worker_data_t));
 	stack->spin_ns = MIN(PMMPTHREAD_WORKER_SPIN_SEED_NS, pmmpthread_worker_spin_max_ns);
+	PMMPTHREAD_HINT_INIT(&stack->pending);
 
 	stack->monitor = monitor;
 
@@ -97,6 +106,7 @@ void pmmpthread_worker_data_free(pmmpthread_worker_data_t *worker_data) {
 		//we should never be freeing worker_data for a worker with active tasks
 		ZEND_ASSERT(worker_data->running == NULL);
 
+		PMMPTHREAD_HINT_DESTROY(&worker_data->pending);
 		efree(worker_data);
 
 		pmmpthread_monitor_unlock(monitor);
