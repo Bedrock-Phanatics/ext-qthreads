@@ -56,6 +56,11 @@ Waking a sleeping `Worker` costs the thread submitting the task a syscall, which
 
 `pmmpthread.worker_spin_us` (default `200`, `php.ini` only) is the longest a worker will stay awake like this. Set it to `0` to always sleep right away, which uses less CPU when workers get a task every couple hundred microseconds, at the cost of throughput.
 
+## Known issue: big strings on objects shared with other threads
+When a thread drops its last ref to a thread-safe object that another thread is still connected to, it makes a persistent copy of every string it assigned to that object, since its own copy is about to be freed. For example, the main thread collecting a task whose worker hasn't let go of it yet copies the strings it passed to the task.
+
+This is cheap for small strings, but with big ones (e.g. serialized chunks) it costs a `malloc()` and copy per task, and the copies get freed on another thread, which can make glibc return and re-fault memory. In a benchmark with 64 KiB strings and one worker, this made some runs about half as fast as others. Avoiding the copy would mean keeping strings, or the object's storage, alive past their owner without a thread to free them in a timely way, so it's left as is. To avoid it, keep big inputs on an object which outlives the tasks (e.g. a shared `ThreadSafeArray`) instead of assigning them to each task.
+
 ## Why not drop pmmpthread and move on to something newer and easier to work with, like [krakjoe/parallel](https://github.com/krakjoe/parallel)?
 - We found parallel too limited for the use cases we needed it for. If it had some thread-safe class base like `Threaded` (`ThreadedBase` or `ThreadSafe` in newer versions), it might be more usable.
 - It's possible to implement parallel's API using pthreads/pmmpthread, but not the other way round.
