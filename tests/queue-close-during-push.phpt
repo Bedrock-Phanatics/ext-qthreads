@@ -1,5 +1,5 @@
 --TEST--
-Test ThreadSafeQueue wakes every waiting consumer when close() lands during a push that succeeds
+Test ThreadSafeQueue close() during a push either rejects the value or lets exactly one consumer pop it, and wakes every consumer
 --FILE--
 <?php
 
@@ -34,14 +34,14 @@ class Pusher extends Thread{
 		try{
 			$this->q->push($payload);
 		}catch(\RuntimeException){
-			//close() won the race
+			$this->state["rejected"] = true;
 		}
 	}
 }
 
 for($i = 0; $i < 10; $i++){
 	$q = new ThreadSafeQueue();
-	$state = ThreadSafeArray::fromArray(["waiting" => 0, "pushing" => false, "popped" => 0]);
+	$state = ThreadSafeArray::fromArray(["waiting" => 0, "pushing" => false, "popped" => 0, "rejected" => false]);
 	$consumers = [];
 	for($j = 0; $j < 3; $j++){
 		$consumers[] = $t = new Consumer($q, $state);
@@ -66,8 +66,9 @@ for($i = 0; $i < 10; $i++){
 		$t->join();
 	}
 	$pusher->join();
-	if($state["popped"] > 1){
-		echo "popped ", $state["popped"], "\n";
+	//whichever way close() lands, the value must not be lost or duplicated
+	if($state["popped"] + (int) $state["rejected"] !== 1){
+		echo "popped ", $state["popped"], ", rejected ", var_export($state["rejected"], true), "\n";
 	}
 }
 echo "OK\n";
