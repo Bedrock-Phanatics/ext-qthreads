@@ -133,6 +133,10 @@ ZEND_BEGIN_MODULE_GLOBALS(pmmpthread)
 	zend_object_handlers custom_socket_object_handlers;
 #endif
 	struct _pmmpthread_exports_t* exports;
+	//see pmmpthread_worker_submitted()
+	uint64_t submit_last;
+	uint64_t submit_gap;
+	uint64_t wake_cost;
 ZEND_END_MODULE_GLOBALS(pmmpthread)
 
 #define PMMPTHREAD_ZG(v) TSRMG(pmmpthread_globals_id, zend_pmmpthread_globals *, v)

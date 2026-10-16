@@ -71,6 +71,8 @@ struct _pmmpthread_worker_data_t {
 	zend_ulong tasks_collected;
 	pmmpthread_queue *collecting; //tasks the creator is running collectors on, see pmmpthread_worker_collect_tasks()
 	zend_bool pending; //PMMPTHREAD_HINT_* only
+	zend_bool sleeping;
+	zend_bool spin_pays; //set by the last submitter, see pmmpthread_worker_submitted()
 	uint64_t idle_since;
 	uint64_t spin_ns;
 };
@@ -113,6 +115,26 @@ void pmmpthread_worker_data_free(pmmpthread_worker_data_t *worker_data) {
 	}
 }
 
+//spinning only pays off while waking workers would eat over half of the submitting thread's time.
+//Otherwise it just burns a core per worker to shave a few microseconds off each task's latency.
+static void pmmpthread_worker_submitted(pmmpthread_worker_data_t *worker_data, zend_bool notify) {
+	uint64_t now = pmmpthread_hrtime();
+	uint64_t gap = MIN(now - PMMPTHREAD_ZG(submit_last), pmmpthread_worker_spin_max_ns);
+
+	PMMPTHREAD_ZG(submit_last) = now;
+	PMMPTHREAD_ZG(submit_gap) = PMMPTHREAD_ZG(submit_gap) - PMMPTHREAD_ZG(submit_gap) / 8 + gap / 8;
+	worker_data->spin_pays = 2 * PMMPTHREAD_ZG(wake_cost) > PMMPTHREAD_ZG(submit_gap);
+
+	if (notify) {
+		zend_bool waking = worker_data->sleeping;
+		pmmpthread_monitor_notify(worker_data->monitor);
+		if (waking) {
+			uint64_t cost = pmmpthread_hrtime() - now;
+			PMMPTHREAD_ZG(wake_cost) = PMMPTHREAD_ZG(wake_cost) == 0 ? cost : PMMPTHREAD_ZG(wake_cost) - PMMPTHREAD_ZG(wake_cost) / 8 + cost / 8;
+		}
+	}
+}
+
 zend_long pmmpthread_worker_add_task(pmmpthread_worker_data_t *worker_data, zval *value) {
 	zend_long size = 0;
 
@@ -125,7 +147,9 @@ zend_long pmmpthread_worker_add_task(pmmpthread_worker_data_t *worker_data, zval
 		size = worker_data->queue.size;
 		pmmpthread_queue_push_new(&worker_data->queue, value);
 		PMMPTHREAD_HINT_STORE(&worker_data->pending, 1);
-		if (!size) {
+		if (pmmpthread_worker_spin_max_ns > 0) {
+			pmmpthread_worker_submitted(worker_data, size == 0);
+		} else if (!size) {
 			pmmpthread_monitor_notify(worker_data->monitor);
 		}
 		size = worker_data->queue.size;
@@ -310,7 +334,7 @@ pmmpthread_monitor_state_t pmmpthread_worker_next_task(pmmpthread_worker_data_t 
 			}
 			if (worker_data->idle_since == 0 && pmmpthread_worker_spin_max_ns > 0) {
 				worker_data->idle_since = pmmpthread_hrtime();
-				if (worker_data->spin_ns > 0) {
+				if (worker_data->spin_ns > 0 && worker_data->spin_pays) {
 					pmmpthread_monitor_unlock(monitor);
 					pmmpthread_worker_spin(worker_data, worker_data->idle_since + worker_data->spin_ns);
 					if (!pmmpthread_monitor_lock(monitor)) {
@@ -319,7 +343,9 @@ pmmpthread_monitor_state_t pmmpthread_worker_next_task(pmmpthread_worker_data_t 
 					continue;
 				}
 			}
+			worker_data->sleeping = 1;
 			pmmpthread_monitor_wait(monitor, 0);
+			worker_data->sleeping = 0;
 		}
 		pmmpthread_monitor_unlock(monitor);
 	}

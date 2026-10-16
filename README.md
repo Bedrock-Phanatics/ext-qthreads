@@ -59,9 +59,9 @@ opcache.enable_cli=1
 to your `php.ini` file.
 
 ## Worker spinning
-Waking a sleeping `Worker` costs the thread submitting the task a syscall, which can take longer than a small task itself, especially in VMs. So a worker which keeps getting tasks shortly after running out stays awake for a while before sleeping, adapting to how soon tasks usually arrive.
+Waking a sleeping `Worker` costs the thread submitting the task a syscall, which can take longer than a small task itself, especially in VMs. So when a thread submits tasks fast enough that waking workers would take up more than half its time, a worker which runs out stays awake for a while before sleeping, adapting to how soon tasks usually arrive. Workers getting tasks at a slower, steady pace just sleep, rather than burning a core each to shave a few microseconds off every task.
 
-`pmmpthread.worker_spin_us` (default `200`, `php.ini` only) is the longest a worker will stay awake like this. Set it to `0` to always sleep right away, which uses less CPU when workers get a task every couple hundred microseconds, at the cost of throughput.
+`pmmpthread.worker_spin_us` (default `200`, `php.ini` only) is the longest a worker will stay awake like this. Set it to `0` to always sleep right away, which uses less CPU during bursts of small tasks, at the cost of throughput.
 
 ## Known issue: big strings on objects shared with other threads
 When a thread drops its last ref to a thread-safe object that another thread is still connected to, it makes a persistent copy of every string it assigned to that object, since its own copy is about to be freed. For example, the main thread collecting a task whose worker hasn't let go of it yet copies the strings it passed to the task.

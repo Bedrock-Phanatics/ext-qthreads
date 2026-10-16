@@ -318,6 +318,9 @@ PHP_RINIT_FUNCTION(pmmpthread) {
 	PMMPTHREAD_ZG(options) = PMMPTHREAD_INHERIT_ALL;
 	PMMPTHREAD_ZG(connecting_object) = NULL;
 	PMMPTHREAD_ZG(blocked_creator) = NULL;
+	PMMPTHREAD_ZG(submit_last) = 0;
+	PMMPTHREAD_ZG(submit_gap) = 0;
+	PMMPTHREAD_ZG(wake_cost) = 0;
 	pmmpthread_exports_init();
 
 #if HAVE_PMMPTHREAD_EXT_SOCKETS_SUPPORT
