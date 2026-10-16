@@ -229,6 +229,7 @@ PHP_MINIT_FUNCTION(pmmpthread)
 	if (!pmmpthread_globals_init()) {
 		return FAILURE;
 	}
+	pmmpthread_prepare_startup();
 
 	TSRMLS_CACHE_UPDATE();
 
@@ -255,6 +256,7 @@ PHP_MSHUTDOWN_FUNCTION(pmmpthread)
 	UNREGISTER_INI_ENTRIES();
 
 	if (pmmpthread_instance == TSRMLS_CACHE) {
+		pmmpthread_prepare_shutdown();
 		pmmpthread_globals_shutdown();
 
 		if (memcmp(sapi_module.name, ZEND_STRL("cli")) == SUCCESS) {

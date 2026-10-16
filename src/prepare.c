@@ -22,9 +22,17 @@
 #include <src/copy.h>
 #include <Zend/zend_enum.h>
 #include <Zend/zend_observer.h>
+#include <Zend/zend_extensions.h>
+#include <Zend/zend_inheritance.h>
+#include <main/php_ini.h>
 
 #define PMMPTHREAD_PREPARATION_BEGIN_CRITICAL() pmmpthread_globals_lock();
 #define PMMPTHREAD_PREPARATION_END_CRITICAL()   pmmpthread_globals_unlock()
+
+//without opcache, a thread evaluates its classes' constants and default values, and links its anonymous classes, in
+//place the first time it uses them, which threads copying those classes would race with. So, like opcache does, classes
+//get mutable data slots that Zend evaluates into instead, and anonymous classes are linked under the exports link lock.
+static zend_bool pmmpthread_isolate_classes = 0;
 
 /* {{{ */
 static zend_class_entry* pmmpthread_prepared_entry(const pmmpthread_ident_t* source, zend_class_entry *candidate);
@@ -52,13 +60,23 @@ zend_object* prepare_enum_constant(const pmmpthread_ident_t* source, zend_class_
 	return new_obj;
 } /* }}} */
 
+/* {{{ the values the owner evaluated, which may refer to classes this thread can't find by name, see
+	pmmpthread_isolate_classes. Only safe to read while it's blocked, otherwise the class's own unevaluated ones are used. */
+static zend_class_mutable_data* pmmpthread_evaluated_class_data(const pmmpthread_ident_t* source, zend_class_entry* candidate) {
+	if (source->ls != PMMPTHREAD_ZG(blocked_creator) || !ZEND_MAP_PTR(candidate->mutable_data)) {
+		return NULL;
+	}
+	return *(zend_class_mutable_data**) PMMPTHREAD_MAP_PTR_OFFSET2PTR(source->ls, (uintptr_t) ZEND_MAP_PTR(candidate->mutable_data));
+} /* }}} */
+
 /* {{{ */
 static void prepare_class_constants(const pmmpthread_ident_t* source, zend_class_entry *candidate, zend_class_entry *prepared) {
 
 	zend_string *key;
 	zval *value;
+	zend_class_mutable_data* evaluated = pmmpthread_evaluated_class_data(source, candidate);
 
-	ZEND_HASH_FOREACH_STR_KEY_VAL(&candidate->constants_table, key, value) {
+	ZEND_HASH_FOREACH_STR_KEY_VAL(evaluated && evaluated->constants_table ? evaluated->constants_table : &candidate->constants_table, key, value) {
 		zend_string *name;
 
 		if (zend_hash_exists(&prepared->constants_table, key)) {
@@ -287,6 +305,8 @@ static void prepare_class_property_table(const pmmpthread_ident_t* source, zend_
 
 	if (candidate->default_properties_count) {
 		int i;
+		zend_class_mutable_data* evaluated = pmmpthread_evaluated_class_data(source, candidate);
+		zval* defaults = evaluated && evaluated->default_properties_table ? evaluated->default_properties_table : candidate->default_properties_table;
 
 		if(prepared->default_properties_table != NULL) {
 			efree(prepared->default_properties_table);
@@ -296,13 +316,13 @@ static void prepare_class_property_table(const pmmpthread_ident_t* source, zend_
 
 		memcpy(
 			prepared->default_properties_table,
-			candidate->default_properties_table,
+			defaults,
 			sizeof(zval) * candidate->default_properties_count);
 
 		for (i=0; i<candidate->default_properties_count; i++) {
 			if (Z_REFCOUNTED(prepared->default_properties_table[i])) {
 				if (pmmpthread_copy_zval(source,
-					&prepared->default_properties_table[i], &candidate->default_properties_table[i]) == FAILURE) {
+					&prepared->default_properties_table[i], &defaults[i]) == FAILURE) {
 					ZEND_ASSERT(0);
 					ZVAL_NULL(&prepared->default_properties_table[i]);
 				}
@@ -581,6 +601,10 @@ static zend_class_entry* pmmpthread_copy_entry(const pmmpthread_ident_t* source,
 	prepared->type = candidate->type;
 
 	zend_initialize_class_data(prepared, 1);
+	if (pmmpthread_isolate_classes) {
+		//other threads may copy this copy too
+		ZEND_MAP_PTR_NEW(prepared->mutable_data);
+	}
 
 	prepared->ce_flags = candidate->ce_flags;
 	prepared->refcount = 1;
@@ -663,13 +687,24 @@ typedef struct _pmmpthread_exports_t {
 	pmmpthread_exported_table_t functions;
 	pmmpthread_exported_table_t classes;
 	size_t map_ptr_last; //copies of exported classes may refer to map ptr slots up to here
+	pthread_mutex_t link_lock; //recursive, see pmmpthread_declare_anon_class()
 } pmmpthread_exports_t;
 
 void pmmpthread_exports_init(void) {
 	pmmpthread_exports_t* exports = malloc(sizeof(pmmpthread_exports_t));
 	if (exports != NULL) {
+		pthread_mutexattr_t attr;
+
 		memset(exports, 0, sizeof(pmmpthread_exports_t));
 		pthread_mutex_init(&exports->lock, NULL);
+		pthread_mutexattr_init(&attr);
+#if defined(PTHREAD_MUTEX_RECURSIVE) || defined(__FreeBSD__)
+		pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_RECURSIVE);
+#else
+		pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_RECURSIVE_NP);
+#endif
+		pthread_mutex_init(&exports->link_lock, &attr);
+		pthread_mutexattr_destroy(&attr);
 		zend_hash_init(&exports->functions.entries, 64, NULL, NULL, 0);
 		zend_hash_init(&exports->classes.entries, 64, NULL, NULL, 0);
 	}
@@ -684,6 +719,7 @@ void pmmpthread_exports_destroy(void) {
 		zend_hash_destroy(&exports->functions.entries);
 		zend_hash_destroy(&exports->classes.entries);
 		pthread_mutex_destroy(&exports->lock);
+		pthread_mutex_destroy(&exports->link_lock);
 		free(exports);
 	}
 }
@@ -761,6 +797,159 @@ static void* pmmpthread_exports_find(const pmmpthread_ident_t* source, zend_bool
 		pthread_mutex_unlock(&exports->lock);
 	}
 	return result;
+} /* }}} */
+
+/* {{{ see pmmpthread_isolate_classes */
+static zend_op_array *(*pmmpthread_original_compile_file)(zend_file_handle *file_handle, int type);
+#if PHP_VERSION_ID >= 80200
+static zend_op_array *(*pmmpthread_original_compile_string)(zend_string *source_string, const char *filename, zend_compile_position position);
+#else
+static zend_op_array *(*pmmpthread_original_compile_string)(zend_string *source_string, const char *filename);
+#endif
+
+static void pmmpthread_isolate_new_classes(void) {
+	Bucket* start = CG(class_table)->arData;
+	Bucket* bucket = start + CG(class_table)->nNumUsed;
+
+	//new classes are at the end, and everything before them already has a slot
+	while (bucket-- > start) {
+		zend_class_entry* ce;
+
+		if (Z_TYPE(bucket->val) == IS_UNDEF) {
+			continue;
+		}
+		ce = Z_PTR(bucket->val);
+		if (ce->type == ZEND_INTERNAL_CLASS || ZEND_MAP_PTR(ce->mutable_data)) {
+			break;
+		}
+		if (!(ce->ce_flags & ZEND_ACC_IMMUTABLE)) {
+			ZEND_MAP_PTR_NEW(ce->mutable_data);
+		}
+	}
+}
+
+static zend_op_array* pmmpthread_compile_file(zend_file_handle *file_handle, int type) {
+	zend_op_array* op_array = pmmpthread_original_compile_file(file_handle, type);
+	pmmpthread_isolate_new_classes();
+	return op_array;
+}
+
+#if PHP_VERSION_ID >= 80200
+static zend_op_array* pmmpthread_compile_string(zend_string *source_string, const char *filename, zend_compile_position position) {
+	zend_op_array* op_array = pmmpthread_original_compile_string(source_string, filename, position);
+#else
+static zend_op_array* pmmpthread_compile_string(zend_string *source_string, const char *filename) {
+	zend_op_array* op_array = pmmpthread_original_compile_string(source_string, filename);
+#endif
+	pmmpthread_isolate_new_classes();
+	return op_array;
+}
+
+static zend_bool pmmpthread_load_link_dependencies(zend_class_entry* ce, zend_string* lc_parent_name) {
+	if (ce->parent_name && !zend_lookup_class_ex(ce->parent_name, lc_parent_name, 0) && EG(exception)) {
+		return 0;
+	}
+	for (uint32_t i = 0; i < ce->num_traits; i++) {
+		if (!zend_lookup_class_ex(ce->trait_names[i].name, ce->trait_names[i].lc_name, 0) && EG(exception)) {
+			return 0;
+		}
+	}
+	for (uint32_t i = 0; i < ce->num_interfaces; i++) {
+		if (!zend_lookup_class_ex(ce->interface_names[i].name, ce->interface_names[i].lc_name, 0) && EG(exception)) {
+			return 0;
+		}
+	}
+	return 1;
+}
+
+//ZEND_DECLARE_ANON_CLASS, but linking under the lock threads copying our classes take
+static int pmmpthread_declare_anon_class(zend_execute_data *execute_data) {
+	const zend_op* opline = EX(opline);
+	pmmpthread_exports_t* exports = PMMPTHREAD_ZG(exports);
+	zend_string *rtd_key, *lc_parent_name;
+	zend_class_entry* ce;
+	zend_class_entry* volatile linked = NULL;
+
+	if (CACHED_PTR(opline->extended_value) != NULL || exports == NULL) {
+		return ZEND_USER_OPCODE_DISPATCH;
+	}
+	rtd_key = Z_STR_P(RT_CONSTANT(opline, opline->op1));
+	ce = zend_hash_find_ptr(EG(class_table), rtd_key);
+	if (ce == NULL || (ce->ce_flags & ZEND_ACC_LINKED)) {
+		return ZEND_USER_OPCODE_DISPATCH;
+	}
+	lc_parent_name = opline->op2_type == IS_CONST ? Z_STR_P(RT_CONSTANT(opline, opline->op2)) : NULL;
+
+	//autoload first, so linking doesn't run PHP code while copiers wait
+	if (!pmmpthread_load_link_dependencies(ce, lc_parent_name)) {
+		return ZEND_USER_OPCODE_CONTINUE;
+	}
+
+	pthread_mutex_lock(&exports->link_lock);
+	zend_try {
+		//autoloading may have declared it already
+		linked = (ce->ce_flags & ZEND_ACC_LINKED) ? ce : zend_do_link_class(ce, lc_parent_name, rtd_key);
+	} zend_catch {
+		pthread_mutex_unlock(&exports->link_lock);
+		zend_bailout();
+	} zend_end_try();
+	pthread_mutex_unlock(&exports->link_lock);
+
+	if (linked == NULL) {
+		return ZEND_USER_OPCODE_CONTINUE;
+	}
+	CACHE_PTR(opline->extended_value, linked);
+	Z_CE_P(EX_VAR(opline->result.var)) = linked;
+	EX(opline) = opline + 1;
+	return ZEND_USER_OPCODE_CONTINUE;
+}
+
+//opcache already keeps shared classes immutable, and slots allocated here could clash with the ones it hands out
+static zend_bool pmmpthread_opcache_enabled(void) {
+	zval* value;
+
+	if (zend_get_extension("Zend OPcache") == NULL) {
+		return 0;
+	}
+	value = cfg_get_entry(ZEND_STRL("opcache.enable"));
+	if (value != NULL && !zend_ini_parse_bool(Z_STR_P(value))) {
+		return 0;
+	}
+	if (strcmp(sapi_module.name, "cli") == 0 || strcmp(sapi_module.name, "phpdbg") == 0) {
+		value = cfg_get_entry(ZEND_STRL("opcache.enable_cli"));
+		return value != NULL && zend_ini_parse_bool(Z_STR_P(value));
+	}
+	return 1;
+}
+
+void pmmpthread_prepare_startup(void) {
+	if (pmmpthread_opcache_enabled()) {
+		return;
+	}
+	pmmpthread_isolate_classes = 1;
+	pmmpthread_original_compile_file = zend_compile_file;
+	zend_compile_file = pmmpthread_compile_file;
+	pmmpthread_original_compile_string = zend_compile_string;
+	zend_compile_string = pmmpthread_compile_string;
+	if (zend_get_user_opcode_handler(ZEND_DECLARE_ANON_CLASS) == NULL) {
+		zend_set_user_opcode_handler(ZEND_DECLARE_ANON_CLASS, pmmpthread_declare_anon_class);
+	}
+}
+
+void pmmpthread_prepare_shutdown(void) {
+	if (!pmmpthread_isolate_classes) {
+		return;
+	}
+	if (zend_compile_file == pmmpthread_compile_file) {
+		zend_compile_file = pmmpthread_original_compile_file;
+	}
+	if (zend_compile_string == pmmpthread_compile_string) {
+		zend_compile_string = pmmpthread_original_compile_string;
+	}
+	if (zend_get_user_opcode_handler(ZEND_DECLARE_ANON_CLASS) == pmmpthread_declare_anon_class) {
+		zend_set_user_opcode_handler(ZEND_DECLARE_ANON_CLASS, NULL);
+	}
+	pmmpthread_isolate_classes = 0;
 } /* }}} */
 
 static void pmmpthread_prepare_immutable_class_dependencies(const pmmpthread_ident_t* source, zend_class_entry* candidate, int do_late_bindings) {
@@ -865,7 +1054,7 @@ static void prepare_class_dependencies(const pmmpthread_ident_t* source, zend_cl
 }
 
 /* {{{ */
-static zend_class_entry* pmmpthread_create_entry(const pmmpthread_ident_t* source, zend_class_entry *candidate, int do_late_bindings) {
+static zend_class_entry* pmmpthread_create_entry_unlocked(const pmmpthread_ident_t* source, zend_class_entry *candidate, int do_late_bindings) {
 	zend_class_entry *prepared = NULL;
 	zend_string *lookup = NULL;
 
@@ -944,6 +1133,42 @@ static zend_class_entry* pmmpthread_create_entry(const pmmpthread_ident_t* sourc
 	zend_string_release(lookup);
 
 	prepare_class_dependencies(source, prepared);
+
+	return prepared;
+} /* }}} */
+
+/* {{{ */
+static zend_class_entry* pmmpthread_create_entry(const pmmpthread_ident_t* source, zend_class_entry *candidate, int do_late_bindings) {
+	pmmpthread_exports_t* exports = NULL;
+	zend_class_entry* prepared = NULL;
+
+	if (
+		pmmpthread_isolate_classes &&
+		candidate != NULL && candidate->type == ZEND_USER_CLASS &&
+		source->ls != TSRMLS_CACHE && source->ls != PMMPTHREAD_ZG(blocked_creator)
+	) {
+		exports = PMMPTHREAD_ZG_EX(source->ls, exports);
+	}
+	if (exports == NULL) {
+		return pmmpthread_create_entry_unlocked(source, candidate, do_late_bindings);
+	}
+
+	//already copied, and it can't need updating unless it's an anonymous class we copied before it was linked
+	zend_string* lookup = zend_string_tolower(candidate->name);
+	prepared = zend_hash_find_ptr(EG(class_table), lookup);
+	zend_string_release(lookup);
+	if (prepared != NULL && (prepared->ce_flags & (ZEND_ACC_ANON_CLASS|ZEND_ACC_LINKED)) != ZEND_ACC_ANON_CLASS) {
+		return prepared;
+	}
+
+	pthread_mutex_lock(&exports->link_lock);
+	zend_try {
+		prepared = pmmpthread_create_entry_unlocked(source, candidate, do_late_bindings);
+	} zend_catch {
+		pthread_mutex_unlock(&exports->link_lock);
+		zend_bailout();
+	} zend_end_try();
+	pthread_mutex_unlock(&exports->link_lock);
 
 	return prepared;
 } /* }}} */

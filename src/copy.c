@@ -545,6 +545,18 @@ static zend_op_array** pmmpthread_copy_dynamic_func_defs(const pmmpthread_ident_
 	return new;
 } /* }}} */
 
+/* {{{ without opcache, the owner sets these on the function itself when it first runs it, and we reset them anyway */
+static void pmmpthread_copy_op_array_struct(zend_op_array* copy, const zend_op_array* original) {
+	size_t first = MIN(XtOffsetOf(zend_op_array, ZEND_MAP_PTR(run_time_cache)), XtOffsetOf(zend_op_array, ZEND_MAP_PTR(static_variables_ptr)));
+	size_t second = MAX(XtOffsetOf(zend_op_array, ZEND_MAP_PTR(run_time_cache)), XtOffsetOf(zend_op_array, ZEND_MAP_PTR(static_variables_ptr)));
+
+	memcpy(copy, original, first);
+	memcpy((char*) copy + first + sizeof(void*), (const char*) original + first + sizeof(void*), second - first - sizeof(void*));
+	memcpy((char*) copy + second + sizeof(void*), (const char*) original + second + sizeof(void*), sizeof(zend_op_array) - second - sizeof(void*));
+	ZEND_MAP_PTR_INIT(copy->run_time_cache, NULL);
+	ZEND_MAP_PTR_INIT(copy->static_variables_ptr, NULL);
+} /* }}} */
+
 /* {{{ */
 static inline zend_function* pmmpthread_copy_user_function(const pmmpthread_ident_t* owner, const zend_function *function, zend_bool copy_static_variables) {
 	zend_function  *copy;
@@ -555,7 +567,7 @@ static inline zend_function* pmmpthread_copy_user_function(const pmmpthread_iden
 
 	copy = (zend_function*)
 		zend_arena_alloc(&CG(arena), sizeof(zend_op_array));
-	memcpy(copy, function, sizeof(zend_op_array));
+	pmmpthread_copy_op_array_struct(&copy->op_array, &function->op_array);
 
 	op_array = &copy->op_array;
 	variables = op_array->vars;
