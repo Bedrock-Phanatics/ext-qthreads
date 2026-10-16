@@ -20,6 +20,9 @@
 #include <src/object.h>
 #include <src/prepare.h>
 #include <Zend/zend_enum.h>
+#ifdef HAVE_VALGRIND
+#	include <valgrind/drd.h>
+#endif
 
 static HashTable* pmmpthread_copy_hash(const pmmpthread_ident_t* owner, HashTable* source);
 static zend_ast_ref* pmmpthread_copy_ast(const pmmpthread_ident_t* owner, zend_ast* ast);
@@ -109,9 +112,16 @@ static HashTable* pmmpthread_copy_hash(const pmmpthread_ident_t* owner, HashTabl
 	zend_string* key;
 	zval* val;
 
+#ifdef HAVE_VALGRIND
+	//without opcache, the owner's GC may be rewriting this word to track the array as a possible root, but the flags
+	//we need never change
+	DRD_IGNORE_VAR(GC_TYPE_INFO(source));
+#endif
+	zend_bool persistent = (GC_FLAGS(source) & IS_ARRAY_PERSISTENT) != 0;
+
 	//file_cache_only keeps immutable arrays in request memory, so they can't be shared
-	HashTable* ht = (HashTable*)pemalloc(sizeof(HashTable), GC_FLAGS(source) & IS_ARRAY_PERSISTENT);
-	zend_hash_init(ht, source->nNumUsed, NULL, source->pDestructor, GC_FLAGS(source) & IS_ARRAY_PERSISTENT);
+	HashTable* ht = (HashTable*)pemalloc(sizeof(HashTable), persistent);
+	zend_hash_init(ht, source->nNumUsed, NULL, source->pDestructor, persistent);
 
 	ZEND_HASH_FOREACH_KEY_VAL(source, h, key, val) {
 		if (pmmpthread_copy_zval(owner, &newzval, val) == FAILURE) {
