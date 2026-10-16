@@ -34,7 +34,7 @@ if (PHP_PMMPTHREAD != "no") {
 		);
 		ADD_SOURCES(
 			PMMPTHREAD_EXT_DIR + "/classes",
-			"pool.c thread.c thread_safe_array.c thread_safe.c runnable.c worker.c",
+			"pool.c thread.c thread_safe_array.c thread_safe.c runnable.c worker.c thread_safe_queue.c",
 			PMMPTHREAD_EXT_NAME,
 			MODE_PHPIZE ? "classes" : null
 		);

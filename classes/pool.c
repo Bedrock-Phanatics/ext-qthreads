@@ -28,13 +28,20 @@ Pool_method(__construct)
 	zend_long size = 0;
 	zend_class_entry *clazz = NULL;
 	zval *ctor = NULL;
+	zend_long options = PMMPTHREAD_INHERIT_ALL;
 
-	ZEND_PARSE_PARAMETERS_START_EX(ZEND_PARSE_PARAMS_THROW, 1, 3)
+	ZEND_PARSE_PARAMETERS_START_EX(ZEND_PARSE_PARAMS_THROW, 1, 4)
 		Z_PARAM_LONG(size)
 		Z_PARAM_OPTIONAL
 		Z_PARAM_CLASS(clazz)
 		Z_PARAM_ARRAY(ctor)
+		Z_PARAM_LONG(options)
 	ZEND_PARSE_PARAMETERS_END();
+
+	if (options & ~(zend_long) (PMMPTHREAD_INHERIT_ALL | PMMPTHREAD_ALLOW_HEADERS)) {
+		zend_argument_value_error(4, "must be a combination of Thread::INHERIT_* and Thread::ALLOW_HEADERS flags");
+		RETURN_THROWS();
+	}
 
 	if (clazz == NULL) clazz = pmmpthread_ce_worker;
 
@@ -48,6 +55,7 @@ Pool_method(__construct)
 		Z_OBJCE_P(getThis()), Z_OBJ_P(getThis()), ZEND_STRL("class"), clazz->name->val, clazz->name->len);
 	if (ctor)
 		zend_update_property(Z_OBJCE_P(getThis()), Z_OBJ_P(getThis()), ZEND_STRL("ctor"), ctor);
+	zend_update_property_long(Z_OBJCE_P(getThis()), Z_OBJ_P(getThis()), ZEND_STRL("workerOptions"), options);
 } /* }}} */
 
 /* {{{ proto void Pool::resize(integer size)
@@ -174,8 +182,9 @@ Pool_method(submit) {
 					zval_ptr_dtor(&retval);
 			}
 
-			zval options;
-			ZVAL_LONG(&options, PMMPTHREAD_INHERIT_ALL); //TODO: allow this to be provided by the constructor
+			zval options, tmp_options;
+			ZVAL_LONG(&options, zval_get_long(
+				zend_read_property(Z_OBJCE_P(getThis()), Z_OBJ_P(getThis()), ZEND_STRL("workerOptions"), 1, &tmp_options)));
 
 			zend_call_method_with_1_params(Z_OBJ_P(&worker), Z_OBJCE(worker), NULL, "start", NULL, &options);
 		}

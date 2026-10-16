@@ -78,8 +78,12 @@
 #include <dmalloc.h>
 #endif
 
+/* {{{ allocations are aligned, so a plain pointer key only uses a fraction of the buckets; rotating is lossless */
+#define PMMPTHREAD_PTR_KEY(p) ((((zend_ulong) (uintptr_t) (p)) >> 3) | (((zend_ulong) (uintptr_t) (p)) << (sizeof(zend_ulong) * 8 - 3))) /* }}} */
+
 extern zend_class_entry *pmmpthread_ce_thread_safe;
 extern zend_class_entry *pmmpthread_ce_array;
+extern zend_class_entry *pmmpthread_ce_queue;
 extern zend_class_entry *pmmpthread_ce_runnable;
 extern zend_class_entry *pmmpthread_ce_thread;
 extern zend_class_entry *pmmpthread_ce_worker;
@@ -104,6 +108,7 @@ extern zend_class_entry *pmmpthread_ce_nts_value_error;
 
 extern zend_object_handlers pmmpthread_ts_ce_handlers;
 extern zend_object_handlers pmmpthread_array_ce_handlers;
+extern zend_object_handlers pmmpthread_queue_ce_handlers;
 extern zend_object_handlers pmmpthread_socket_handlers;
 extern zend_object_handlers *zend_handlers;
 
@@ -119,15 +124,23 @@ ZEND_BEGIN_MODULE_GLOBALS(pmmpthread)
 	HashTable resolve;
 	HashTable filenames;
 	HashTable closure_base_op_arrays;
+	HashTable queue_keepalive;
+	void*** blocked_creator;
 	pmmpthread_zend_object_t* connecting_object;
 	pmmpthread_zend_object_t* thread_shared_globals;
 #if HAVE_PMMPTHREAD_EXT_SOCKETS_SUPPORT
 	zend_object_handlers *original_socket_object_handlers;
 	zend_object_handlers custom_socket_object_handlers;
 #endif
+	struct _pmmpthread_exports_t* exports;
+	//see pmmpthread_worker_submitted()
+	uint64_t submit_last;
+	uint64_t submit_gap;
+	uint64_t wake_cost;
 ZEND_END_MODULE_GLOBALS(pmmpthread)
 
 #define PMMPTHREAD_ZG(v) TSRMG(pmmpthread_globals_id, zend_pmmpthread_globals *, v)
+#define PMMPTHREAD_ZG_EX(ls, v) PMMPTHREAD_FETCH_CTX(ls, pmmpthread_globals_id, zend_pmmpthread_globals*, v)
 
 #define PMMPTHREAD_FETCH_ALL(ls, id, type) ((type) (*((void ***) ls))[TSRM_UNSHUFFLE_RSRC_ID(id)])
 #define PMMPTHREAD_FETCH_CTX(ls, id, type, element) (((type) (*((void ***) ls))[TSRM_UNSHUFFLE_RSRC_ID(id)])->element)
@@ -143,17 +156,10 @@ ZEND_END_MODULE_GLOBALS(pmmpthread)
 #define PMMPTHREAD_MAP_PTR_PTR2OFFSET(ls, ptr) \
 	((void*)(((char*)(ptr)) - ((char*)PMMPTHREAD_CG(ls, map_ptr_base))))
 
-#if PHP_VERSION_ID >= 80200
 #define PMMPTHREAD_MAP_PTR_GET(ls, ptr) \
 	(ZEND_MAP_PTR_IS_OFFSET(ptr) ? \
 		*PMMPTHREAD_MAP_PTR_OFFSET2PTR(ls, (uintptr_t)ZEND_MAP_PTR(ptr)) : \
 		((void*)(ZEND_MAP_PTR(ptr))))
-#else
-#define PMMPTHREAD_MAP_PTR_GET(ls, ptr) \
-	(*(ZEND_MAP_PTR_IS_OFFSET(ptr) ? \
-		PMMPTHREAD_MAP_PTR_OFFSET2PTR(ls, (uintptr_t)ZEND_MAP_PTR(ptr)) : \
-		((void**)(ZEND_MAP_PTR(ptr)))))
-#endif
 
 /* {{{ */
 typedef struct _pmmpthread_call_t {
@@ -163,11 +169,7 @@ typedef struct _pmmpthread_call_t {
 
 #define PMMPTHREAD_CALL_EMPTY {empty_fcall_info, empty_fcall_info_cache}
 
-#if PHP_VERSION_ID >= 80400
 #define PMMPTHREAD_OBJECT_PROPERTY(prop_info) ((prop_info->flags & (ZEND_ACC_STATIC | ZEND_ACC_VIRTUAL)) == 0)
-#else
-#define PMMPTHREAD_OBJECT_PROPERTY(prop_info) ((prop_info->flags & ZEND_ACC_STATIC) == 0)
-#endif
 
 /* this is a copy of the same struct in zend_closures.c, which unfortunately isn't exported */
 typedef struct _zend_closure {

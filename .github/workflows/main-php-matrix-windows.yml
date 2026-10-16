@@ -238,7 +238,26 @@ jobs:
         run: |
           $env:REPORT_EXIT_STATUS=1
 
-          .\php.exe .\SDK\script\run-tests.php -P -q --show-diff --show-slow 30000 -n -c .\php.ini ${{ github.workspace }}\tests
+          # on Windows, run-tests' own timeout only kills the cmd.exe wrapper (and misses tests stuck in an assert dialog),
+          # leaving php.exe running with the generated test files locked, so a retry or the whole job fails.
+          # its timeout is set above ours, so this watchdog is what kills hung tests, and the runner sees a normal failure.
+          $cdb = "${env:ProgramFiles(x86)}\Windows Kits\10\Debuggers\x64\cdb.exe"
+          # test processes run files from here, so only they get killed
+          $testsDir = "${{ github.workspace }}\tests"
+          $runner = Start-Process .\php.exe -ArgumentList ".\SDK\script\run-tests.php -P -q --show-diff --show-slow 30000 --set-timeout 900 -n -c .\php.ini $testsDir" -NoNewWindow -PassThru
+          $null = $runner.Handle
+          while (!$runner.WaitForExit(5000)) {
+            Get-CimInstance Win32_Process -Filter "Name='php.exe'" |
+              Where-Object { $_.ProcessId -ne $runner.Id -and $_.CommandLine -like "*$testsDir*" -and $_.CreationDate -lt (Get-Date).AddSeconds(-180) } |
+              ForEach-Object {
+                echo "Killing hung test process $($_.ProcessId): $($_.CommandLine)"
+                if (Test-Path $cdb) {
+                  & $cdb -p $_.ProcessId -c "~*k 30; qd" 2>&1 | ForEach-Object { "$_" } | Where-Object { $_ -notmatch "^(ModLoad|\*\*\*|Symbol search|Executable search|Microsoft|Copyright|CommandLine)" } | Select-Object -First 400
+                }
+                Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
+              }
+          }
+          exit $runner.ExitCode
 
       - name: Upload test results
         if: always()

@@ -17,6 +17,7 @@
  */
 
 #include <src/pmmpthread.h>
+#include <src/prepare.h>
 
 #define Worker_method(name) PHP_METHOD(pmmp_thread_Worker, name)
 
@@ -40,8 +41,9 @@ Worker_method(stack)
 			thread->std.ce->name->val);
 		return;
 	}
-	if (pmmpthread_monitor_check(&thread->ts_obj->monitor, PMMPTHREAD_MONITOR_ERROR | PMMPTHREAD_MONITOR_AWAIT_JOIN | PMMPTHREAD_MONITOR_JOINED)) {
-		//allow submitting tasks before the worker starts, but not after it exits
+	pmmpthread_exports_publish();
+	zend_long size = pmmpthread_worker_add_task(thread->worker_data, work);
+	if (size < 0) {
 		zend_throw_exception_ex(
 			spl_ce_RuntimeException,
 			0,
@@ -51,7 +53,7 @@ Worker_method(stack)
 		return;
 	}
 
-	RETURN_LONG(pmmpthread_worker_add_task(thread->worker_data, work));
+	RETURN_LONG(size);
 } /* }}} */
 
 /* {{{ proto Runnable Worker::unstack()

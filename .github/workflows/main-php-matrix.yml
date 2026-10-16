@@ -160,3 +160,103 @@ jobs:
             ${{ github.workspace }}/tests/*.diff
             ${{ github.workspace }}/tests/*.mem
           if-no-files-found: ignore
+
+  build-php-asan:
+    name: Build PHP (ASan + UBSan)
+    concurrency: php-debug-${{ inputs.php }}-asan-${{ inputs.runs-on }}-${{ github.ref }}
+    runs-on: ${{ inputs.runs-on }}
+
+    steps:
+      - name: Check PHP build cache
+        uses: actions/cache@v4
+        id: cache
+        with:
+          path: ${{ github.workspace }}/php
+          key: php-debug-${{ inputs.php }}-asan-${{ inputs.runs-on }}
+          lookup-only: true
+
+      - name: Install PHP build dependencies
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: sudo apt-get update && sudo apt-get install re2c
+
+      - name: Download PHP
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: curl -L https://github.com/php/php-src/archive/refs/tags/php-${{ inputs.php }}.tar.gz | tar -xz
+
+      - name: Compile PHP
+        if: steps.cache.outputs.cache-hit != 'true'
+        working-directory: php-src-php-${{ inputs.php }}
+        run: |
+          ./buildconf --force
+          ./configure \
+            --disable-all \
+            --enable-cli \
+            --enable-zts \
+            --enable-debug \
+            --enable-sockets \
+            --enable-opcache \
+            --enable-opcache-jit \
+            --enable-address-sanitizer \
+            --enable-undefined-sanitizer \
+            --prefix="${{ github.workspace }}/php"
+          make -j $(nproc) install
+
+  test-extension-asan:
+    name: Test (ASan + UBSan, OPcache ${{ matrix.opcache }})
+    runs-on: ${{ inputs.runs-on }}
+    needs: build-php-asan
+
+    strategy:
+      fail-fast: false
+      matrix:
+        opcache:
+          - "off"
+          - "on"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch PHP build cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ github.workspace }}/php
+          key: php-debug-${{ inputs.php }}-asan-${{ inputs.runs-on }}
+
+      - name: Compile extension
+        #must match PHP's sanitizer build, including its arena layout
+        run: |
+          $GITHUB_WORKSPACE/php/bin/phpize
+          ./configure --with-php-config=$GITHUB_WORKSPACE/php/bin/php-config --with-pmmpthread-sockets \
+            CFLAGS="-g -O1 -fno-omit-frame-pointer -fsanitize=address,undefined -DZEND_TRACK_ARENA_ALLOC" \
+            LDFLAGS="-fsanitize=address,undefined"
+          make install
+
+      - name: Generate php.ini
+        run: |
+          echo "extension=pmmpthread.so" > $GITHUB_WORKSPACE/php.ini
+          if [[ "${{ matrix.opcache }}" == "on" ]]; then
+            if [[ "${{ inputs.opcache-shared }}" == "true" ]]; then
+              echo "zend_extension=opcache.so" >> $GITHUB_WORKSPACE/php.ini
+            fi
+            echo "opcache.enable=1" >> $GITHUB_WORKSPACE/php.ini
+            echo "opcache.enable_cli=1" >> $GITHUB_WORKSPACE/php.ini
+            echo "opcache.protect_memory=1" >> $GITHUB_WORKSPACE/php.ini
+          fi
+
+      - name: Run PHPT tests
+        env:
+          LSAN_OPTIONS: suppressions=${{ github.workspace }}/.github/lsan-suppressions.txt
+          UBSAN_OPTIONS: print_stacktrace=1
+        run: |
+          $GITHUB_WORKSPACE/php/bin/php ./run-tests.php --asan -P -j$(nproc) -q --show-diff --show-slow 30000 -n -c $GITHUB_WORKSPACE/php.ini
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-${{ inputs.php }}-asan-opcache-${{ matrix.opcache }}
+          path: |
+            ${{ github.workspace }}/tests/*.log
+            ${{ github.workspace }}/tests/*.diff
+            ${{ github.workspace }}/tests/*.out
+          if-no-files-found: ignore

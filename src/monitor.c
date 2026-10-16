@@ -33,13 +33,11 @@ zend_result pmmpthread_monitor_init(pmmpthread_monitor_t* m) {
 	int ret = pthread_mutex_init(&m->mutex, &at);
 	pthread_mutexattr_destroy(&at);
 	if (ret != 0) {
-		free(m);
 		return FAILURE;
 	}
 
 	if (pthread_cond_init(&m->cond, NULL) != 0) {
 		pthread_mutex_destroy(&m->mutex);
-		free(m);
 		return FAILURE;
 	}
 
@@ -49,14 +47,6 @@ zend_result pmmpthread_monitor_init(pmmpthread_monitor_t* m) {
 void pmmpthread_monitor_destroy(pmmpthread_monitor_t* m) {
 	pthread_mutex_destroy(&m->mutex);
 	pthread_cond_destroy(&m->cond);
-}
-
-zend_bool pmmpthread_monitor_lock(pmmpthread_monitor_t *m) {
-	return (pthread_mutex_lock(&m->mutex) == 0);
-}
-
-zend_bool pmmpthread_monitor_unlock(pmmpthread_monitor_t *m) {
-	return (pthread_mutex_unlock(&m->mutex) == 0);
 }
 
 pmmpthread_monitor_state_t pmmpthread_monitor_check(pmmpthread_monitor_t *m, pmmpthread_monitor_state_t state) {
@@ -91,17 +81,9 @@ int pmmpthread_monitor_wait(pmmpthread_monitor_t *m, long timeout) {
 	return pthread_cond_timedwait(&m->cond, &m->mutex, &spec);
 }
 
-int pmmpthread_monitor_notify(pmmpthread_monitor_t *m) {
-	return pthread_cond_broadcast(&m->cond);
-}
-
-int pmmpthread_monitor_notify_one(pmmpthread_monitor_t *m) {
-	return pthread_cond_signal(&m->cond);
-}
-
 void pmmpthread_monitor_wait_until(pmmpthread_monitor_t *m, pmmpthread_monitor_state_t state) {
 	if (pmmpthread_monitor_lock(m)) {
-		while (!pmmpthread_monitor_check(m, state)) {
+		while (!(m->state & state)) {
 			if (pmmpthread_monitor_wait(m, 0) != 0) {
 				break;
 			}

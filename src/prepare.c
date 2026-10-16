@@ -22,9 +22,16 @@
 #include <src/copy.h>
 #include <Zend/zend_enum.h>
 #include <Zend/zend_observer.h>
+#include <Zend/zend_extensions.h>
+#include <main/php_ini.h>
 
 #define PMMPTHREAD_PREPARATION_BEGIN_CRITICAL() pmmpthread_globals_lock();
 #define PMMPTHREAD_PREPARATION_END_CRITICAL()   pmmpthread_globals_unlock()
+
+//without opcache, a thread evaluates its classes' constants and default values, and links its anonymous classes, in
+//place the first time it uses them, which threads copying those classes would race with. So, like opcache does, classes
+//get mutable data slots that Zend evaluates into instead, and unlinked anonymous classes are copied from snapshots.
+static zend_bool pmmpthread_isolate_classes = 0;
 
 /* {{{ */
 static zend_class_entry* pmmpthread_prepared_entry(const pmmpthread_ident_t* source, zend_class_entry *candidate);
@@ -52,13 +59,23 @@ zend_object* prepare_enum_constant(const pmmpthread_ident_t* source, zend_class_
 	return new_obj;
 } /* }}} */
 
+/* {{{ the values the owner evaluated, which may refer to classes this thread can't find by name, see
+	pmmpthread_isolate_classes. Only safe to read while it's blocked, otherwise the class's own unevaluated ones are used. */
+static zend_class_mutable_data* pmmpthread_evaluated_class_data(const pmmpthread_ident_t* source, zend_class_entry* candidate) {
+	if (source->ls != PMMPTHREAD_ZG(blocked_creator) || !ZEND_MAP_PTR(candidate->mutable_data)) {
+		return NULL;
+	}
+	return *(zend_class_mutable_data**) PMMPTHREAD_MAP_PTR_OFFSET2PTR(source->ls, (uintptr_t) ZEND_MAP_PTR(candidate->mutable_data));
+} /* }}} */
+
 /* {{{ */
 static void prepare_class_constants(const pmmpthread_ident_t* source, zend_class_entry *candidate, zend_class_entry *prepared) {
 
 	zend_string *key;
 	zval *value;
+	zend_class_mutable_data* evaluated = pmmpthread_evaluated_class_data(source, candidate);
 
-	ZEND_HASH_FOREACH_STR_KEY_VAL(&candidate->constants_table, key, value) {
+	ZEND_HASH_FOREACH_STR_KEY_VAL(evaluated && evaluated->constants_table ? evaluated->constants_table : &candidate->constants_table, key, value) {
 		zend_string *name;
 
 		if (zend_hash_exists(&prepared->constants_table, key)) {
@@ -71,10 +88,12 @@ static void prepare_class_constants(const pmmpthread_ident_t* source, zend_class
 		name = pmmpthread_copy_string(key);
 
 		if (zc->ce->type == ZEND_INTERNAL_CLASS) {
-			rc = pemalloc(sizeof(zend_class_constant), 1);
-		} else {
-			rc = zend_arena_alloc(&CG(arena), sizeof(zend_class_constant));
+			//process-lifetime and never modified, so share it like zend_do_inheritance() does
+			zend_hash_add_ptr(&prepared->constants_table, name, zc);
+			zend_string_release(name);
+			continue;
 		}
+		rc = zend_arena_alloc(&CG(arena), sizeof(zend_class_constant));
 
 		memcpy(rc, zc, sizeof(zend_class_constant));
 		if (ZEND_CLASS_CONST_FLAGS(zc) & ZEND_CLASS_CONST_IS_CASE && Z_TYPE(zc->value) == IS_OBJECT) {
@@ -92,7 +111,7 @@ static void prepare_class_constants(const pmmpthread_ident_t* source, zend_class
 				zend_zval_type_name(&zc->value)
 			);
 		}
-		rc->ce = pmmpthread_prepared_entry(source, zc->ce);
+		rc->ce = zc->ce == candidate ? prepared : pmmpthread_prepared_entry(source, zc->ce);
 
 		zend_hash_add_ptr(&prepared->constants_table, name, rc);
 
@@ -105,9 +124,7 @@ static void prepare_class_constants(const pmmpthread_ident_t* source, zend_class
 			rc->attributes = pmmpthread_copy_attributes(source, zc->attributes, zc->ce->type == ZEND_INTERNAL_CLASS ? NULL : zc->ce->info.user.filename);
 		}
 
-#if PHP_VERSION_ID >= 80300
 		pmmpthread_copy_zend_type(&zc->type, &rc->type);
-#endif
 
 	} ZEND_HASH_FOREACH_END();
 } /* }}} */
@@ -154,14 +171,7 @@ static void prepare_class_statics(const pmmpthread_ident_t* source, zend_class_e
 			parent = parent->parent;
 		}
 
-#if PHP_VERSION_ID >= 80200
 		//zend_initialize_class_data() already inits the MAP_PTR(static_members_table) to NULL, so nothing to do here
-#else
-		if (!ZEND_MAP_PTR(prepared->static_members_table)) {
-			ZEND_MAP_PTR_INIT(prepared->static_members_table, zend_arena_alloc(&CG(arena), sizeof(zval*)));
-			ZEND_MAP_PTR_SET(prepared->static_members_table, NULL);
-		}
-#endif
 	} else prepared->default_static_members_count = 0;
 } /* }}} */
 
@@ -200,7 +210,7 @@ static zend_property_info* copy_property_info(
 	zend_class_entry *prepared,
 	const zend_property_info* info
 ) {
-	zend_property_info* dup = zend_hash_index_find_ptr(&PMMPTHREAD_ZG(resolve), (zend_ulong)info);
+	zend_property_info* dup = zend_hash_index_find_ptr(&PMMPTHREAD_ZG(resolve), PMMPTHREAD_PTR_KEY(info));
 	if (dup) {
 		return dup;
 	}
@@ -213,7 +223,7 @@ static zend_property_info* copy_property_info(
 	}
 	memcpy(dup, info, sizeof(zend_property_info));
 
-	zend_hash_index_update_ptr(&PMMPTHREAD_ZG(resolve), (zend_ulong)info, dup);
+	zend_hash_index_update_ptr(&PMMPTHREAD_ZG(resolve), PMMPTHREAD_PTR_KEY(info), dup);
 
 	dup->name = pmmpthread_copy_string(info->name);
 	if (info->doc_comment) {
@@ -236,7 +246,6 @@ static zend_property_info* copy_property_info(
 		dup->attributes = pmmpthread_copy_attributes(source, info->attributes, info->ce->type == ZEND_INTERNAL_CLASS ? NULL : info->ce->info.user.filename);
 	}
 
-#if PHP_VERSION_ID >= 80400
 	if (info->prototype) {
 		dup->prototype = copy_property_info(source, candidate, prepared, info->prototype);
 	} else dup->prototype = NULL;
@@ -261,7 +270,6 @@ static zend_property_info* copy_property_info(
 			} else dup->hooks[i] = NULL;
 		}
 	} else dup->hooks = NULL;
-#endif
 
 	return dup;
 }
@@ -285,6 +293,8 @@ static void prepare_class_property_table(const pmmpthread_ident_t* source, zend_
 
 	if (candidate->default_properties_count) {
 		int i;
+		zend_class_mutable_data* evaluated = pmmpthread_evaluated_class_data(source, candidate);
+		zval* defaults = evaluated && evaluated->default_properties_table ? evaluated->default_properties_table : candidate->default_properties_table;
 
 		if(prepared->default_properties_table != NULL) {
 			efree(prepared->default_properties_table);
@@ -294,13 +304,13 @@ static void prepare_class_property_table(const pmmpthread_ident_t* source, zend_
 
 		memcpy(
 			prepared->default_properties_table,
-			candidate->default_properties_table,
+			defaults,
 			sizeof(zval) * candidate->default_properties_count);
 
 		for (i=0; i<candidate->default_properties_count; i++) {
 			if (Z_REFCOUNTED(prepared->default_properties_table[i])) {
 				if (pmmpthread_copy_zval(source,
-					&prepared->default_properties_table[i], &candidate->default_properties_table[i]) == FAILURE) {
+					&prepared->default_properties_table[i], &defaults[i]) == FAILURE) {
 					ZEND_ASSERT(0);
 					ZVAL_NULL(&prepared->default_properties_table[i]);
 				}
@@ -386,7 +396,6 @@ while(0)
 		SET_FUNC_REF(iterator_funcs_ptr, rewind);
 	} else prepared->iterator_funcs_ptr = NULL;
 
-#if PHP_VERSION_ID >= 80200
 	if (candidate->arrayaccess_funcs_ptr) {
 		prepared->arrayaccess_funcs_ptr = zend_arena_alloc(&CG(arena), sizeof(zend_class_arrayaccess_funcs));
 		SET_FUNC_REF(arrayaccess_funcs_ptr, offsetget);
@@ -394,12 +403,57 @@ while(0)
 		SET_FUNC_REF(arrayaccess_funcs_ptr, offsetset);
 		SET_FUNC_REF(arrayaccess_funcs_ptr, offsetunset);
 	} else prepared->arrayaccess_funcs_ptr = NULL;
-#endif
 #undef SET_FUNC_REF
+} /* }}} */
+
+/* {{{ same as _destroy_zend_class_traits_info() in zend_opcode.c */
+static void free_class_traits(zend_class_entry *prepared) {
+	uint32_t i;
+
+	if (prepared->trait_names) {
+		for (i = 0; i < prepared->num_traits; i++) {
+			zend_string_release(prepared->trait_names[i].name);
+			zend_string_release(prepared->trait_names[i].lc_name);
+		}
+		efree(prepared->trait_names);
+		prepared->trait_names = NULL;
+	}
+	if (prepared->trait_aliases) {
+		for (i = 0; prepared->trait_aliases[i]; i++) {
+			zend_trait_alias *alias = prepared->trait_aliases[i];
+			if (alias->trait_method.method_name) {
+				zend_string_release(alias->trait_method.method_name);
+			}
+			if (alias->trait_method.class_name) {
+				zend_string_release(alias->trait_method.class_name);
+			}
+			if (alias->alias) {
+				zend_string_release(alias->alias);
+			}
+			efree(alias);
+		}
+		efree(prepared->trait_aliases);
+		prepared->trait_aliases = NULL;
+	}
+	if (prepared->trait_precedences) {
+		for (i = 0; prepared->trait_precedences[i]; i++) {
+			zend_trait_precedence *precedence = prepared->trait_precedences[i];
+			zend_string_release(precedence->trait_method.method_name);
+			zend_string_release(precedence->trait_method.class_name);
+			for (uint32_t j = 0; j < precedence->num_excludes; j++) {
+				zend_string_release(precedence->exclude_class_names[j]);
+			}
+			efree(precedence);
+		}
+		efree(prepared->trait_precedences);
+		prepared->trait_precedences = NULL;
+	}
 } /* }}} */
 
 /* {{{ */
 static void prepare_class_traits(zend_class_entry *candidate, zend_class_entry *prepared) {
+	//an unlinked anonymous class gets prepared again once it's linked
+	free_class_traits(prepared);
 
 	if (candidate->num_traits) {
 		unsigned int trait;
@@ -419,7 +473,6 @@ static void prepare_class_traits(zend_class_entry *candidate, zend_class_entry *
 			alias++;
 		}
 
-		//TODO: some stuff may already have been copied, they will leak if this is the second pass on an anonymous class
 		prepared->trait_aliases = emalloc(sizeof(zend_trait_alias*) * (alias+1));
 		alias = 0;
 
@@ -437,7 +490,6 @@ static void prepare_class_traits(zend_class_entry *candidate, zend_class_entry *
 			precedence++;
 		}
 		prepared->trait_precedences = emalloc(sizeof(zend_trait_precedence*) * (precedence+1));
-		//TODO: some stuff may already have been copied, they will leak if this is the second pass on an anonymous class
 		precedence = 0;
 
 		while (candidate->trait_precedences[precedence]) {
@@ -535,23 +587,21 @@ static zend_class_entry* pmmpthread_copy_entry(const pmmpthread_ident_t* source,
 	prepared->type = candidate->type;
 
 	zend_initialize_class_data(prepared, 1);
+	if (pmmpthread_isolate_classes) {
+		//other threads may copy this copy too
+		ZEND_MAP_PTR_NEW(prepared->mutable_data);
+	}
 
 	prepared->ce_flags = candidate->ce_flags;
 	prepared->refcount = 1;
 
 	memcpy(&prepared->info.user, &candidate->info.user, sizeof(candidate->info.user));
 	if ((PMMPTHREAD_ZG(options) & PMMPTHREAD_INHERIT_COMMENTS) &&
-#if PHP_VERSION_ID >= 80400
 	(candidate->doc_comment)) {
 		prepared->doc_comment = pmmpthread_copy_string(candidate->doc_comment);
 	} else prepared->doc_comment = NULL;
 	prepared->num_hooked_props = candidate->num_hooked_props;
 	prepared->num_hooked_prop_variance_checks = candidate->num_hooked_prop_variance_checks;
-#else
-	(candidate->info.user.doc_comment)) {
-		prepared->info.user.doc_comment = pmmpthread_copy_string(candidate->info.user.doc_comment);
-	} else prepared->info.user.doc_comment = NULL;
-#endif
 	
 	if (candidate->attributes) {
 		prepared->attributes = pmmpthread_copy_attributes(source, candidate->attributes, prepared->info.user.filename);
@@ -603,6 +653,251 @@ static zend_class_entry* pmmpthread_prepared_entry(const pmmpthread_ident_t* sou
 	return pmmpthread_create_entry(source, candidate, 1);
 } /* }}} */
 
+/* {{{ other threads can't safely read our function/class tables while we may be declaring things, so before handing out
+	anything they might copy lazily, we publish our user functions and classes here. Everything copied code can refer to
+	by INIT_FCALL or DECLARE_ANON_CLASS was declared before the code itself, so it's always published in time. */
+typedef struct _pmmpthread_exported_table_t {
+	HashTable entries;
+	uint32_t used;
+	zend_string* last;
+} pmmpthread_exported_table_t;
+
+typedef struct _pmmpthread_exports_t {
+	pthread_mutex_t lock;
+	pmmpthread_exported_table_t functions;
+	pmmpthread_exported_table_t classes;
+	size_t map_ptr_last; //copies of exported classes may refer to map ptr slots up to here
+	HashTable snapshots; //our unlinked anonymous classes -> their snapshots, see pmmpthread_snapshot_anon_class()
+} pmmpthread_exports_t;
+
+void pmmpthread_exports_init(void) {
+	pmmpthread_exports_t* exports = malloc(sizeof(pmmpthread_exports_t));
+	if (exports != NULL) {
+		memset(exports, 0, sizeof(pmmpthread_exports_t));
+		pthread_mutex_init(&exports->lock, NULL);
+		zend_hash_init(&exports->snapshots, 8, NULL, NULL, 0);
+		zend_hash_init(&exports->functions.entries, 64, NULL, NULL, 0);
+		zend_hash_init(&exports->classes.entries, 64, NULL, NULL, 0);
+	}
+	PMMPTHREAD_ZG(exports) = exports;
+}
+
+//only once no other thread can reach anything we handed out, i.e. after our objects are gone
+void pmmpthread_exports_destroy(void) {
+	pmmpthread_exports_t* exports = PMMPTHREAD_ZG(exports);
+	if (exports != NULL) {
+		PMMPTHREAD_ZG(exports) = NULL;
+		zend_hash_destroy(&exports->functions.entries);
+		zend_hash_destroy(&exports->classes.entries);
+		pthread_mutex_destroy(&exports->lock);
+		zend_hash_destroy(&exports->snapshots);
+		free(exports);
+	}
+}
+
+//buckets before used are already published, unless a rehash compacted the table and moved them
+static inline zend_bool pmmpthread_exports_current(const pmmpthread_exported_table_t* exported, const HashTable* table) {
+	return exported->used == table->nNumUsed && (exported->used == 0 || table->arData[exported->used - 1].key == exported->last);
+}
+
+static void pmmpthread_exports_add(pmmpthread_exported_table_t* exported, const HashTable* table, zend_uchar user_type, const HashTable* snapshots) {
+	if (exported->used > table->nNumUsed || (exported->used > 0 && table->arData[exported->used - 1].key != exported->last)) {
+		exported->used = 0;
+	}
+	for (uint32_t i = exported->used; i < table->nNumUsed; i++) {
+		const Bucket* bucket = table->arData + i;
+		if (Z_TYPE(bucket->val) != IS_UNDEF && bucket->key != NULL) {
+			//zend_function and zend_class_entry both start with their type
+			if (*(zend_uchar*) Z_PTR(bucket->val) == user_type) {
+				void* snapshot = snapshots != NULL ? zend_hash_index_find_ptr(snapshots, PMMPTHREAD_PTR_KEY(Z_PTR(bucket->val))) : NULL;
+				zend_hash_update_ptr(&exported->entries, bucket->key, snapshot != NULL ? snapshot : Z_PTR(bucket->val));
+			}
+		}
+	}
+	exported->used = table->nNumUsed;
+	//the last bucket is never a hole, and its key is either permanent or ref'd by us, so it can't be reused for another key
+	exported->last = table->nNumUsed > 0 ? table->arData[table->nNumUsed - 1].key : NULL;
+}
+
+void pmmpthread_exports_publish(void) {
+	pmmpthread_exports_t* exports = PMMPTHREAD_ZG(exports);
+	if (
+		exports == NULL ||
+		(
+			exports->map_ptr_last == CG(map_ptr_last) &&
+			pmmpthread_exports_current(&exports->functions, CG(function_table)) &&
+			pmmpthread_exports_current(&exports->classes, CG(class_table))
+		)
+	) {
+		return;
+	}
+	pthread_mutex_lock(&exports->lock);
+	pmmpthread_exports_add(&exports->functions, CG(function_table), ZEND_USER_FUNCTION, NULL);
+	pmmpthread_exports_add(&exports->classes, CG(class_table), ZEND_USER_CLASS, &exports->snapshots);
+	exports->map_ptr_last = CG(map_ptr_last);
+	pthread_mutex_unlock(&exports->lock);
+}
+
+static size_t pmmpthread_exports_map_ptr_last(const pmmpthread_ident_t* source) {
+	size_t result = 0;
+
+	if (source->ls == TSRMLS_CACHE || source->ls == PMMPTHREAD_ZG(blocked_creator)) {
+		return PMMPTHREAD_CG(source->ls, map_ptr_last);
+	}
+
+	pmmpthread_exports_t* exports = PMMPTHREAD_ZG_EX(source->ls, exports);
+	if (exports != NULL) {
+		pthread_mutex_lock(&exports->lock);
+		result = exports->map_ptr_last;
+		pthread_mutex_unlock(&exports->lock);
+	}
+	return result;
+}
+
+static void* pmmpthread_exports_find(const pmmpthread_ident_t* source, zend_bool classes, zend_string* key) {
+	void* result = NULL;
+
+	if (source->ls == TSRMLS_CACHE || source->ls == PMMPTHREAD_ZG(blocked_creator)) {
+		//nothing can be declared there while we look
+		return zend_hash_find_ptr(classes ? PMMPTHREAD_CG(source->ls, class_table) : PMMPTHREAD_CG(source->ls, function_table), key);
+	}
+
+	pmmpthread_exports_t* exports = PMMPTHREAD_ZG_EX(source->ls, exports);
+	if (exports != NULL) {
+		pthread_mutex_lock(&exports->lock);
+		result = zend_hash_find_ptr(classes ? &exports->classes.entries : &exports->functions.entries, key);
+		pthread_mutex_unlock(&exports->lock);
+	}
+	return result;
+} /* }}} */
+
+/* {{{ see pmmpthread_isolate_classes */
+static zend_op_array *(*pmmpthread_original_compile_file)(zend_file_handle *file_handle, int type);
+static zend_op_array *(*pmmpthread_original_compile_string)(zend_string *source_string, const char *filename, zend_compile_position position);
+
+//threads copying an anonymous class from us must never see it mid-link, which the first `new class` does to it in place,
+//so while it's unlinked they're handed this pristine copy, which is never used here. It's kept in the class table under
+//a hidden key so it dies along with it.
+static void pmmpthread_snapshot_anon_class(zend_class_entry* ce) {
+	pmmpthread_exports_t* exports = PMMPTHREAD_ZG(exports);
+	pmmpthread_ident_t self;
+	zend_class_entry* snapshot;
+	char key[64];
+	int key_len;
+
+	if (
+		exports == NULL ||
+		(ce->ce_flags & (ZEND_ACC_ANON_CLASS|ZEND_ACC_LINKED|ZEND_ACC_IMMUTABLE)) != ZEND_ACC_ANON_CLASS ||
+		zend_hash_index_exists(&exports->snapshots, PMMPTHREAD_PTR_KEY(ce))
+	) {
+		return;
+	}
+
+	self.ls = TSRMLS_CACHE;
+	self.id = pmmpthread_self();
+	snapshot = pmmpthread_copy_entry(&self, ce);
+	key_len = snprintf(key, sizeof(key), "?pmmpthread snapshot %p", (void*) snapshot);
+	key[0] = '\0';
+	//a request string, like Zend's own keys for user classes, which it releases as such
+	zend_string* hidden = zend_string_init(key, key_len, 0);
+	zend_hash_add_new_ptr(EG(class_table), hidden, snapshot);
+	zend_string_release(hidden);
+	pmmpthread_prepared_entry_late_bindings(&self, ce, snapshot);
+	zend_hash_apply_with_arguments(&snapshot->function_table, pmmpthread_prepared_entry_function_prepare, 3, &self, snapshot, ce);
+	zend_hash_index_add_new_ptr(&exports->snapshots, PMMPTHREAD_PTR_KEY(ce), snapshot);
+}
+
+static void pmmpthread_isolate_new_classes(void) {
+	Bucket* start = CG(class_table)->arData;
+	Bucket* bucket = start + CG(class_table)->nNumUsed;
+	zend_class_entry* anon[16];
+	uint32_t anon_count = 0;
+
+	//new classes are at the end, and everything before them already has a slot
+	while (bucket-- > start) {
+		zend_class_entry* ce;
+
+		if (Z_TYPE(bucket->val) == IS_UNDEF) {
+			continue;
+		}
+		ce = Z_PTR(bucket->val);
+		if (ce->type == ZEND_INTERNAL_CLASS || ZEND_MAP_PTR(ce->mutable_data)) {
+			break;
+		}
+		if (!(ce->ce_flags & ZEND_ACC_IMMUTABLE)) {
+			ZEND_MAP_PTR_NEW(ce->mutable_data);
+			if ((ce->ce_flags & (ZEND_ACC_ANON_CLASS|ZEND_ACC_LINKED)) == ZEND_ACC_ANON_CLASS) {
+				if (anon_count == sizeof(anon) / sizeof(anon[0])) {
+					//snapshotting adds to the table, so only once we're done walking it
+					while (anon_count > 0) {
+						pmmpthread_snapshot_anon_class(anon[--anon_count]);
+					}
+					pmmpthread_isolate_new_classes();
+					return;
+				}
+				anon[anon_count++] = ce;
+			}
+		}
+	}
+	while (anon_count > 0) {
+		pmmpthread_snapshot_anon_class(anon[--anon_count]);
+	}
+}
+
+static zend_op_array* pmmpthread_compile_file(zend_file_handle *file_handle, int type) {
+	zend_op_array* op_array = pmmpthread_original_compile_file(file_handle, type);
+	pmmpthread_isolate_new_classes();
+	return op_array;
+}
+
+static zend_op_array* pmmpthread_compile_string(zend_string *source_string, const char *filename, zend_compile_position position) {
+	zend_op_array* op_array = pmmpthread_original_compile_string(source_string, filename, position);
+	pmmpthread_isolate_new_classes();
+	return op_array;
+}
+
+//opcache already keeps shared classes immutable, and slots allocated here could clash with the ones it hands out
+static zend_bool pmmpthread_opcache_enabled(void) {
+	zval* value;
+
+	if (zend_get_extension("Zend OPcache") == NULL) {
+		return 0;
+	}
+	value = cfg_get_entry(ZEND_STRL("opcache.enable"));
+	if (value != NULL && !zend_ini_parse_bool(Z_STR_P(value))) {
+		return 0;
+	}
+	if (strcmp(sapi_module.name, "cli") == 0 || strcmp(sapi_module.name, "phpdbg") == 0) {
+		value = cfg_get_entry(ZEND_STRL("opcache.enable_cli"));
+		return value != NULL && zend_ini_parse_bool(Z_STR_P(value));
+	}
+	return 1;
+}
+
+void pmmpthread_prepare_startup(void) {
+	if (pmmpthread_opcache_enabled()) {
+		return;
+	}
+	pmmpthread_isolate_classes = 1;
+	pmmpthread_original_compile_file = zend_compile_file;
+	zend_compile_file = pmmpthread_compile_file;
+	pmmpthread_original_compile_string = zend_compile_string;
+	zend_compile_string = pmmpthread_compile_string;
+}
+
+void pmmpthread_prepare_shutdown(void) {
+	if (!pmmpthread_isolate_classes) {
+		return;
+	}
+	if (zend_compile_file == pmmpthread_compile_file) {
+		zend_compile_file = pmmpthread_original_compile_file;
+	}
+	if (zend_compile_string == pmmpthread_compile_string) {
+		zend_compile_string = pmmpthread_original_compile_string;
+	}
+	pmmpthread_isolate_classes = 0;
+} /* }}} */
+
 static void pmmpthread_prepare_immutable_class_dependencies(const pmmpthread_ident_t* source, zend_class_entry* candidate, int do_late_bindings) {
 	//assume that all dependencies of immutable classes are themselves immutable
 
@@ -624,7 +919,7 @@ static void pmmpthread_prepare_immutable_class_dependencies(const pmmpthread_ide
 		ZEND_TYPE_FOREACH(info->type, type) {
 			if (ZEND_TYPE_HAS_NAME(*type)) {
 				zend_string* lookup = zend_string_tolower(ZEND_TYPE_NAME(*type));
-				ce = zend_hash_find_ptr(PMMPTHREAD_EG(source->ls, class_table), lookup);
+				ce = pmmpthread_exports_find(source, 1, lookup);
 				zend_string_release(lookup);
 			} else {
 				ce = NULL;
@@ -633,6 +928,74 @@ static void pmmpthread_prepare_immutable_class_dependencies(const pmmpthread_ide
 				pmmpthread_create_entry(source, ce, do_late_bindings);
 			}
 		} ZEND_TYPE_FOREACH_END();
+	} ZEND_HASH_FOREACH_END();
+}
+
+static zend_bool prepare_function_dependency(const pmmpthread_ident_t* source, zend_string* lcname) {
+	if (zend_hash_exists(EG(function_table), lcname)) {
+		return 1;
+	}
+	zend_function* original = pmmpthread_exports_find(source, 0, lcname);
+	if (original == NULL || original->type != ZEND_USER_FUNCTION) {
+		return 0;
+	}
+	zend_string* key = pmmpthread_copy_string(lcname);
+	zend_function* copy = pmmpthread_copy_function(source, original);
+	//added before recursing, so mutually recursive functions terminate
+	zend_hash_add_new_ptr(EG(function_table), key, copy);
+	zend_string_release(key);
+	pmmpthread_prepare_function_dependencies(source, copy);
+	return 1;
+}
+
+/* {{{ copies what copied code needs but this thread didn't inherit; INIT_FCALL and DECLARE_ANON_CLASS crash without it */
+void pmmpthread_prepare_function_dependencies(const pmmpthread_ident_t* source, zend_function* function) {
+	zend_op_array* op_array;
+	zend_op* opline;
+	zend_op* end;
+
+	if (function->type != ZEND_USER_FUNCTION) {
+		return;
+	}
+	op_array = &function->op_array;
+	end = op_array->opcodes + op_array->last;
+
+	for (opline = op_array->opcodes; opline < end; opline++) {
+		if (opline->opcode == ZEND_INIT_FCALL) {
+			prepare_function_dependency(source, Z_STR_P(RT_CONSTANT(opline, opline->op2)));
+		} else if (opline->opcode == ZEND_DECLARE_ANON_CLASS) {
+			zend_string* key = Z_STR_P(RT_CONSTANT(opline, opline->op1));
+			if (!zend_hash_exists(EG(class_table), key)) {
+				zend_class_entry* original = pmmpthread_exports_find(source, 1, key);
+				if (original != NULL) {
+					pmmpthread_create_entry(source, original, 1);
+				}
+			}
+		} else if (source->ls != PMMPTHREAD_ZG(blocked_creator)) {
+			//by-name calls fail safely and may refer to things declared later, so only bother with them at startup
+			continue;
+		} else if (opline->opcode == ZEND_INIT_FCALL_BY_NAME) {
+			prepare_function_dependency(source, Z_STR_P(RT_CONSTANT(opline, opline->op2) + 1));
+		} else if (opline->opcode == ZEND_INIT_NS_FCALL_BY_NAME) {
+			if (!prepare_function_dependency(source, Z_STR_P(RT_CONSTANT(opline, opline->op2) + 1))) {
+				prepare_function_dependency(source, Z_STR_P(RT_CONSTANT(opline, opline->op2) + 2));
+			}
+		}
+	}
+
+	for (uint32_t i = 0; i < op_array->num_dynamic_func_defs; i++) {
+		pmmpthread_prepare_function_dependencies(source, (zend_function*) op_array->dynamic_func_defs[i]);
+	}
+} /* }}} */
+
+static void prepare_class_dependencies(const pmmpthread_ident_t* source, zend_class_entry* prepared) {
+	zend_function* function;
+
+	ZEND_HASH_FOREACH_PTR(&prepared->function_table, function) {
+		//inherited methods were handled with their own class
+		if (function->common.scope == prepared) {
+			pmmpthread_prepare_function_dependencies(source, function);
+		}
 	} ZEND_HASH_FOREACH_END();
 }
 
@@ -666,10 +1029,13 @@ static zend_class_entry* pmmpthread_create_entry(const pmmpthread_ident_t* sourc
 			prepared = NULL;
 		} else {
 			pmmpthread_complete_entry(source, candidate, prepared);
+			//linking added methods (e.g. from traits) which still point at the original class
+			zend_hash_apply_with_arguments(&prepared->function_table, pmmpthread_prepared_entry_function_prepare, 3, source, prepared, candidate);
 			if (do_late_bindings) {
 				//linking might cause new statics and constants to become visible
 				pmmpthread_prepared_entry_late_bindings(source, candidate, prepared);
 			}
+			prepare_class_dependencies(source, prepared);
 		}
 	}
 
@@ -679,7 +1045,7 @@ static zend_class_entry* pmmpthread_create_entry(const pmmpthread_ident_t* sourc
 	}
 
 	//this has to be synchronized every time we copy a new class after initial thread bootup, in case new immutable classes want to refer to new offsets in it
-	zend_map_ptr_extend(PMMPTHREAD_CG(source->ls, map_ptr_last));
+	zend_map_ptr_extend(pmmpthread_exports_map_ptr_last(source));
 
 	if (candidate->ce_flags & ZEND_ACC_IMMUTABLE) {
 		//IMMUTABLE classes don't need to be copied and should not be modified
@@ -691,6 +1057,7 @@ static zend_class_entry* pmmpthread_create_entry(const pmmpthread_ident_t* sourc
 			//this is needed to copy non-default statics from the origin thread
 			pmmpthread_prepared_entry_late_bindings(source, candidate, candidate);
 		}
+		prepare_class_dependencies(source, candidate);
 		return candidate;
 	}
 
@@ -710,6 +1077,12 @@ static zend_class_entry* pmmpthread_create_entry(const pmmpthread_ident_t* sourc
 		3, source, prepared, candidate);
 
 	zend_string_release(lookup);
+
+	prepare_class_dependencies(source, prepared);
+
+	if (do_late_bindings && pmmpthread_isolate_classes) {
+		pmmpthread_snapshot_anon_class(prepared);
+	}
 
 	return prepared;
 } /* }}} */
@@ -734,6 +1107,22 @@ void pmmpthread_context_late_bindings(const pmmpthread_ident_t* source) {
 			pmmpthread_prepared_entry_late_bindings(source, zend_hash_find_ptr(PMMPTHREAD_CG(source->ls, class_table), name), entry);
 		}
 	} ZEND_HASH_FOREACH_END();
+
+	if (pmmpthread_isolate_classes) {
+		//only now are the copies complete; snapshotting adds to the table, so not while walking it
+		zend_class_entry** anon = safe_emalloc(zend_hash_num_elements(CG(class_table)), sizeof(zend_class_entry*), 0);
+		uint32_t anon_count = 0;
+
+		ZEND_HASH_MAP_FOREACH_PTR(CG(class_table), entry) {
+			if (entry->type == ZEND_USER_CLASS && (entry->ce_flags & (ZEND_ACC_ANON_CLASS|ZEND_ACC_LINKED)) == ZEND_ACC_ANON_CLASS) {
+				anon[anon_count++] = entry;
+			}
+		} ZEND_HASH_FOREACH_END();
+		while (anon_count > 0) {
+			pmmpthread_snapshot_anon_class(anon[--anon_count]);
+		}
+		efree(anon);
+	}
 }
 
 /* {{{ */
@@ -932,6 +1321,7 @@ int pmmpthread_prepared_startup(pmmpthread_object_t* thread, pmmpthread_monitor_
 
 		zend_map_ptr_extend(PMMPTHREAD_CG(thread->creator.ls, map_ptr_last));
 
+		PMMPTHREAD_ZG(blocked_creator) = thread->creator.ls;
 		if (thread_options & PMMPTHREAD_INHERIT_FUNCTIONS)
 			pmmpthread_prepare_functions(&thread->creator);
 
@@ -944,6 +1334,7 @@ int pmmpthread_prepared_startup(pmmpthread_object_t* thread, pmmpthread_monitor_
 
 		if (thread_options & PMMPTHREAD_INHERIT_INCLUDES)
 			pmmpthread_prepare_includes(&thread->creator);
+		PMMPTHREAD_ZG(blocked_creator) = NULL;
 
 		pmmpthread_monitor_add(ready, PMMPTHREAD_MONITOR_READY);
 

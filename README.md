@@ -1,10 +1,10 @@
-# Threading for PHP - Share Nothing, Do Everything :)
+# qthreads - Threading for PHP
 
-[![CI](https://github.com/pmmp/ext-pmmpthread/actions/workflows/main.yml/badge.svg)](https://github.com/pmmp/ext-pmmpthread/actions/workflows/main.yml)
+[![CI](https://github.com/Bedrock-Phanatics/ext-qthreads/actions/workflows/main.yml/badge.svg)](https://github.com/Bedrock-Phanatics/ext-qthreads/actions/workflows/main.yml)
 
-This project provides limited support for threading in PHP CLI.
+qthreads is Quark's fork of [pmmp/ext-pmmpthread](https://github.com/pmmp/ext-pmmpthread), which itself is a fork of the now-abandoned [krakjoe/pthreads](https://github.com/krakjoe/pthreads) extension. It provides limited support for threading in PHP CLI.
 
-This is a fork of the now-abandoned [krakjoe/pthreads](https://github.com/krakjoe/pthreads) extension.
+It's a drop-in replacement: the extension is still loaded as `pmmpthread`, and the API is still in the `pmmp\thread` namespace, so existing code and `ext-pmmpthread` requirements keep working.
 
 ## Managing expectations
 
@@ -21,7 +21,15 @@ Documentation can be found in the `.stub.php` files  `stubs` folder, and some ex
 Legacy documentation for pthreads v2/v3 can be found [here](http://docs.php.net/manual/en/book.pthreads.php).
 
 ## Fork focus
-This fork is used in production on thousands of [PocketMine-MP](https://github.com/pmmp/PocketMine-MP) servers worldwide. Therefore, the focus is on performance and stability.
+pmmpthread is used in production on thousands of [PocketMine-MP](https://github.com/pmmp/PocketMine-MP) servers worldwide, and qthreads is built for Quark. The focus is on performance and stability.
+
+## Changes in qthreads
+- Requires PHP 8.4 or later
+- `ThreadSafeQueue`, a FIFO queue for passing values between threads without `synchronized()` loops
+- Much faster `Pool`/`Worker` task submission and collection, especially with several workers (see [Worker spinning](#worker-spinning))
+- Faster `ThreadSafeArray` merges, object creation and connections
+- Fixes for crashes when copying classes and functions from a thread that's still declaring new ones, and for several races, deadlocks and leaks
+- Sanitizer CI and a benchmark suite in `bench/`
 
 ## Changes compared to the original
 - PHP 8.1 and 8.2 support
@@ -50,6 +58,16 @@ OPcache isn't enabled in the CLI by default, so you'll need to add
 opcache.enable_cli=1
 ```
 to your `php.ini` file.
+
+## Worker spinning
+Waking a sleeping `Worker` costs the thread submitting the task a syscall, which can take longer than a small task itself, especially in VMs. So when a thread submits tasks fast enough that waking workers would take up more than half its time, a worker which runs out stays awake for a while before sleeping, adapting to how soon tasks usually arrive. Workers getting tasks at a slower, steady pace just sleep, rather than burning a core each to shave a few microseconds off every task.
+
+`pmmpthread.worker_spin_us` (default `200`, `php.ini` only) is the longest a worker will stay awake like this. Set it to `0` to always sleep right away, which uses less CPU during bursts of small tasks, at the cost of throughput.
+
+## Known issue: big strings on objects shared with other threads
+When a thread drops its last ref to a thread-safe object that another thread is still connected to, it makes a persistent copy of every string it assigned to that object, since its own copy is about to be freed. For example, the main thread collecting a task whose worker hasn't let go of it yet copies the strings it passed to the task.
+
+This is cheap for small strings, but with big ones (e.g. serialized chunks) it costs a `malloc()` and copy per task, and the copies get freed on another thread, which can make glibc return and re-fault memory. In a benchmark with 64 KiB strings and one worker, this made some runs about half as fast as others. Avoiding the copy would mean keeping strings, or the object's storage, alive past their owner without a thread to free them in a timely way, so it's left as is. To avoid it, keep big inputs on an object which outlives the tasks (e.g. a shared `ThreadSafeArray`) instead of assigning them to each task.
 
 ## Why not drop pmmpthread and move on to something newer and easier to work with, like [krakjoe/parallel](https://github.com/krakjoe/parallel)?
 - We found parallel too limited for the use cases we needed it for. If it had some thread-safe class base like `Threaded` (`ThreadedBase` or `ThreadSafe` in newer versions), it might be more usable.

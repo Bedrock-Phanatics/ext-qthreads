@@ -27,6 +27,9 @@
 /* {{{ */
 zend_object* pmmpthread_threaded_base_ctor(zend_class_entry *entry);
 zend_object* pmmpthread_threaded_array_ctor(zend_class_entry *entry);
+zend_object* pmmpthread_queue_ctor(zend_class_entry *entry);
+int          pmmpthread_queue_count(zend_object *object, zend_long *count);
+zend_object_iterator* pmmpthread_queue_iterator_create(zend_class_entry *ce, zval *object, int by_ref);
 zend_object* pmmpthread_worker_ctor(zend_class_entry *entry);
 zend_object* pmmpthread_thread_ctor(zend_class_entry *entry);
 void         pmmpthread_base_dtor(zend_object *object);

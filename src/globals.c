@@ -148,11 +148,9 @@ pmmpthread_zend_object_t* pmmpthread_globals_object_alloc(size_t length) {
 	if (pmmpthread_globals_lock()) {
 		zend_hash_index_update_ptr(
 			&PMMPTHREAD_G(objects),
-			(zend_ulong) bucket, bucket);
+			PMMPTHREAD_PTR_KEY(bucket), bucket);
 		pmmpthread_globals_unlock();
 	}
-
-	memset(bucket, 0, length);
 
 	return bucket;
 } /* }}} */
@@ -165,7 +163,7 @@ zend_bool pmmpthread_globals_object_valid(pmmpthread_zend_object_t *address) {
 		return valid;
 
 	if (pmmpthread_globals_lock()) {
-		if (zend_hash_index_exists(&PMMPTHREAD_G(objects), (zend_ulong) address)) {
+		if (zend_hash_index_exists(&PMMPTHREAD_G(objects), PMMPTHREAD_PTR_KEY(address))) {
 			valid = 1;
 		}
 		pmmpthread_globals_unlock();
@@ -183,7 +181,7 @@ zend_bool pmmpthread_globals_object_delete(pmmpthread_zend_object_t *address) {
 
 	if (pmmpthread_globals_lock()) {
 		deleted = zend_hash_index_del(
-			&PMMPTHREAD_G(objects), (zend_ulong) address);
+			&PMMPTHREAD_G(objects), PMMPTHREAD_PTR_KEY(address));
 		pmmpthread_globals_unlock();
 	}
 

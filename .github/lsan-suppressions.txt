@@ -1,0 +1,2 @@
+# PHP core keeps a per-thread dtoa freelist (zend_strtod.c) which is never freed when a thread exits
+leak:Balloc

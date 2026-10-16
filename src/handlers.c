@@ -48,11 +48,7 @@ HashTable* pmmpthread_read_debug(PMMPTHREAD_READ_DEBUG_PASSTHRU_D) {
 HashTable* pmmpthread_read_properties(PMMPTHREAD_READ_PROPERTIES_PASSTHRU_D) {
 	pmmpthread_zend_object_t* threaded = PMMPTHREAD_FETCH_FROM(object);
 
-#if PHP_VERSION_ID >= 80400
 	zend_std_get_properties_ex(&threaded->std);
-#else
-	rebuild_object_properties(&threaded->std);
-#endif
 
 	pmmpthread_store_tohash(
 		&threaded->std, threaded->std.properties);
@@ -79,7 +75,6 @@ zval* pmmpthread_read_dimension(PMMPTHREAD_READ_DIMENSION_PASSTHRU_D) {
 	return rv;
 }
 
-#if PHP_VERSION_ID >= 80400
 /* {{{
 * Copy pasta from zend_object_handlers.c because the equivalent over there had to be static...
 */
@@ -152,7 +147,6 @@ static bool zend_call_get_hook(
 
 	return true;
 }
-#endif //PHP_VERSION_ID >= 80400
 
 zval* pmmpthread_read_property(PMMPTHREAD_READ_PROPERTY_PASSTHRU_D) {
 	zval zmember;
@@ -174,7 +168,6 @@ zval* pmmpthread_read_property(PMMPTHREAD_READ_PROPERTY_PASSTHRU_D) {
 		if (info != NULL) {
 			if (info->flags & ZEND_ACC_STATIC) {
 				info = NULL;
-#if PHP_VERSION_ID >= 80400
 			} else if (info->hooks != NULL) {
 				zend_function* get = info->hooks[ZEND_PROPERTY_HOOK_GET];
 				if (!get) {
@@ -195,7 +188,6 @@ zval* pmmpthread_read_property(PMMPTHREAD_READ_PROPERTY_PASSTHRU_D) {
 						return &EG(uninitialized_zval);
 					}
 				}
-#endif
 			}
 		}
 
@@ -278,7 +270,6 @@ zval* pmmpthread_write_property(PMMPTHREAD_WRITE_PROPERTY_PASSTHRU_D) {
 		if (info != NULL && (info->flags & ZEND_ACC_STATIC) == 0) {
 			ZVAL_STR(&zmember, info->name); //use mangled name to avoid private member shadowing issues
 
-#if PHP_VERSION_ID >= 80400
 			if (info->hooks != NULL) {
 				zend_function* set = info->hooks[ZEND_PROPERTY_HOOK_SET];
 
@@ -310,7 +301,6 @@ zval* pmmpthread_write_property(PMMPTHREAD_WRITE_PROPERTY_PASSTHRU_D) {
 					}
 				}
 			}
-#endif
 			if (write_store) { //if hooked, the setter will do the type verification, so we can skip this
 				zend_execute_data* execute_data = EG(current_execute_data);
 				bool strict = execute_data
@@ -373,9 +363,21 @@ int pmmpthread_has_property(PMMPTHREAD_HAS_PROPERTY_PASSTHRU_D) {
 		(*guard) &= ~IN_ISSET;
 
 		if (Z_TYPE(rv) != IS_UNDEF) {
-			//TODO: this doesn't account for ZEND_PROPERTY_NOT_EMPTY
 			isset = zend_is_true(&rv);
 			zval_ptr_dtor(&rv);
+		}
+
+		if (isset && has_set_exists == ZEND_PROPERTY_NOT_EMPTY) {
+			//empty() needs the __get() value too, like zend_std_has_property()
+			isset = 0;
+			if (!EG(exception) && object->ce->__get && !((*guard) & IN_GET)) {
+				ZVAL_UNDEF(&rv);
+				(*guard) |= IN_GET;
+				zend_call_known_instance_method_with_1_params(object->ce->__get, object, &rv, &zmember);
+				(*guard) &= ~IN_GET;
+				isset = zend_is_true(&rv);
+				zval_ptr_dtor(&rv);
+			}
 		}
 	} else {
 		zend_property_info* info = zend_get_property_info(object->ce, member, 1);
@@ -383,7 +385,6 @@ int pmmpthread_has_property(PMMPTHREAD_HAS_PROPERTY_PASSTHRU_D) {
 		if (info != ZEND_WRONG_PROPERTY_INFO) {
 			if (info != NULL && (info->flags & ZEND_ACC_STATIC) == 0) {
 				ZVAL_STR(&zmember, info->name);
-#if PHP_VERSION_ID >= 80400
 				if (info->hooks != NULL) {
 					zend_function* get = info->hooks[ZEND_PROPERTY_HOOK_GET];
 
@@ -416,7 +417,6 @@ int pmmpthread_has_property(PMMPTHREAD_HAS_PROPERTY_PASSTHRU_D) {
 						}
 					}
 				}
-#endif
 			}
 
 			if (read_store) {
@@ -460,13 +460,11 @@ void pmmpthread_unset_property(PMMPTHREAD_UNSET_PROPERTY_PASSTHRU_D) {
 		if (info != ZEND_WRONG_PROPERTY_INFO) {
 			if (info != NULL && (info->flags & ZEND_ACC_STATIC) == 0) {
 				ZVAL_STR(&zmember, info->name); //defined property, use mangled name
-#if PHP_VERSION_ID >= 80400
 				if (info->hooks != NULL) {
 					zend_throw_error(NULL, "Cannot unset hooked property %s::$%s",
 						ZSTR_VAL(object->ce->name), ZSTR_VAL(member));
 					return;
 				}
-#endif
 			}
 			pmmpthread_store_delete(object, &zmember);
 		}

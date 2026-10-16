@@ -20,6 +20,9 @@
 #include <src/object.h>
 #include <src/prepare.h>
 #include <Zend/zend_enum.h>
+#ifdef HAVE_VALGRIND
+#	include <valgrind/drd.h>
+#endif
 
 static HashTable* pmmpthread_copy_hash(const pmmpthread_ident_t* owner, HashTable* source);
 static zend_ast_ref* pmmpthread_copy_ast(const pmmpthread_ident_t* owner, zend_ast* ast);
@@ -39,7 +42,10 @@ zend_string* pmmpthread_copy_string(zend_string* s) {
 	else {
 		ret = zend_string_dup(s, GC_FLAGS(s) & IS_STR_PERSISTENT);
 	}
-	ZSTR_H(ret) = ZSTR_H(s);
+	if (ret != s) {
+		//copying from our own thread can give back the same interned string, which other threads may be reading
+		ZSTR_H(ret) = ZSTR_H(s);
+	}
 	return ret;
 }
 
@@ -66,7 +72,11 @@ int pmmpthread_copy_zval(const pmmpthread_ident_t* owner, zval* dest, zval* sour
 		break;
 
 	case IS_ARRAY:
-		ZVAL_ARR(dest, pmmpthread_copy_hash(owner, Z_ARRVAL_P(source)));
+		if (Z_ARRVAL_P(source) == &zend_empty_array) {
+			ZVAL_EMPTY_ARRAY(dest);
+		} else {
+			ZVAL_ARR(dest, pmmpthread_copy_hash(owner, Z_ARRVAL_P(source)));
+		}
 		result = SUCCESS;
 		break;
 
@@ -105,9 +115,16 @@ static HashTable* pmmpthread_copy_hash(const pmmpthread_ident_t* owner, HashTabl
 	zend_string* key;
 	zval* val;
 
-	//TODO: what about IS_ARRAY_IMMUTABLE?
-	HashTable* ht = (HashTable*)pemalloc(sizeof(HashTable), GC_FLAGS(source) & IS_ARRAY_PERSISTENT);
-	zend_hash_init(ht, source->nNumUsed, NULL, source->pDestructor, GC_FLAGS(source) & IS_ARRAY_PERSISTENT);
+#ifdef HAVE_VALGRIND
+	//without opcache, the owner's GC may be rewriting this word to track the array as a possible root, but the flags
+	//we need never change
+	DRD_IGNORE_VAR(GC_TYPE_INFO(source));
+#endif
+	zend_bool persistent = (GC_FLAGS(source) & IS_ARRAY_PERSISTENT) != 0;
+
+	//file_cache_only keeps immutable arrays in request memory, so they can't be shared
+	HashTable* ht = (HashTable*)pemalloc(sizeof(HashTable), persistent);
+	zend_hash_init(ht, source->nNumUsed, NULL, source->pDestructor, persistent);
 
 	ZEND_HASH_FOREACH_KEY_VAL(source, h, key, val) {
 		if (pmmpthread_copy_zval(owner, &newzval, val) == FAILURE) {
@@ -426,11 +443,6 @@ static zend_op* pmmpthread_copy_opcodes(zend_op_array *op_array, zval *literals,
 				case ZEND_FAST_CALL:
 					opline->op1.jmp_addr = &copy[opline->op1.jmp_addr - op_array->opcodes];
 					break;
-#if PHP_VERSION_ID < 80200
-				case ZEND_JMPZNZ:
-					/* relative extended_value don't have to be changed */
-					/* break omitted intentionally */
-#endif
 				case ZEND_JMPZ:
 				case ZEND_JMPNZ:
 				case ZEND_JMPZ_EX:
@@ -441,12 +453,8 @@ static zend_op* pmmpthread_copy_opcodes(zend_op_array *op_array, zval *literals,
 				case ZEND_FE_RESET_RW:
 				case ZEND_ASSERT_CHECK:
 				case ZEND_JMP_NULL:
-#if PHP_VERSION_ID >= 80300
 				case ZEND_BIND_INIT_STATIC_OR_JMP:
-#endif
-#if PHP_VERSION_ID >= 80400
 				case ZEND_JMP_FRAMELESS:
-#endif
 					opline->op2.jmp_addr = &copy[opline->op2.jmp_addr - op_array->opcodes];
 					break;
 				case ZEND_CATCH:
@@ -541,6 +549,18 @@ static zend_op_array** pmmpthread_copy_dynamic_func_defs(const pmmpthread_ident_
 	return new;
 } /* }}} */
 
+/* {{{ without opcache, the owner sets these on the function itself when it first runs it, and we reset them anyway */
+static void pmmpthread_copy_op_array_struct(zend_op_array* copy, const zend_op_array* original) {
+	size_t first = MIN(XtOffsetOf(zend_op_array, ZEND_MAP_PTR(run_time_cache)), XtOffsetOf(zend_op_array, ZEND_MAP_PTR(static_variables_ptr)));
+	size_t second = MAX(XtOffsetOf(zend_op_array, ZEND_MAP_PTR(run_time_cache)), XtOffsetOf(zend_op_array, ZEND_MAP_PTR(static_variables_ptr)));
+
+	memcpy(copy, original, first);
+	memcpy((char*) copy + first + sizeof(void*), (const char*) original + first + sizeof(void*), second - first - sizeof(void*));
+	memcpy((char*) copy + second + sizeof(void*), (const char*) original + second + sizeof(void*), sizeof(zend_op_array) - second - sizeof(void*));
+	ZEND_MAP_PTR_INIT(copy->run_time_cache, NULL);
+	ZEND_MAP_PTR_INIT(copy->static_variables_ptr, NULL);
+} /* }}} */
+
 /* {{{ */
 static inline zend_function* pmmpthread_copy_user_function(const pmmpthread_ident_t* owner, const zend_function *function, zend_bool copy_static_variables) {
 	zend_function  *copy;
@@ -551,7 +571,7 @@ static inline zend_function* pmmpthread_copy_user_function(const pmmpthread_iden
 
 	copy = (zend_function*)
 		zend_arena_alloc(&CG(arena), sizeof(zend_op_array));
-	memcpy(copy, function, sizeof(zend_op_array));
+	pmmpthread_copy_op_array_struct(&copy->op_array, &function->op_array);
 
 	op_array = &copy->op_array;
 	variables = op_array->vars;
@@ -573,12 +593,7 @@ static inline zend_function* pmmpthread_copy_user_function(const pmmpthread_iden
 	 * heap runtime caches are only used by closures' copies of function definitions, not the definition itself
 	 */
 	op_array->fn_flags &= ~ZEND_ACC_HEAP_RT_CACHE;
-#if PHP_VERSION_ID >= 80200
 	ZEND_MAP_PTR_INIT(op_array->run_time_cache, NULL);
-#else
-	ZEND_MAP_PTR_INIT(op_array->run_time_cache, zend_arena_alloc(&CG(arena), sizeof(void*)));
-	ZEND_MAP_PTR_SET(op_array->run_time_cache, NULL);
-#endif
 
 	if (op_array->doc_comment) {
 		op_array->doc_comment = pmmpthread_copy_string(op_array->doc_comment);
@@ -632,15 +647,15 @@ static inline zend_function* pmmpthread_copy_user_function(const pmmpthread_iden
 	}
 
 	if (copy_static_variables && op_array->static_variables) {
-		op_array->static_variables = pmmpthread_copy_statics(owner, op_array->static_variables);
+		//when opcache owns the op_array, share its template like the rest of it: destroy_op_array() wouldn't free a copy
+		if (op_array->refcount)
+		{
+			op_array->static_variables = pmmpthread_copy_statics(owner, op_array->static_variables);
+		}
 	} else {
 		op_array->static_variables = NULL;
 	}
-#if PHP_VERSION_ID >= 80200
 	ZEND_MAP_PTR_INIT(op_array->static_variables_ptr, NULL);
-#else
-	ZEND_MAP_PTR_INIT(op_array->static_variables_ptr, &op_array->static_variables);
-#endif
 
 	return copy;
 } /* }}} */
@@ -672,10 +687,10 @@ static zend_function* pmmpthread_copy_function_ex(const pmmpthread_ident_t* owne
 	}
 
 	if (!(function->op_array.fn_flags & ZEND_ACC_CLOSURE)) {
-		copy = zend_hash_index_find_ptr(&PMMPTHREAD_ZG(resolve), (zend_ulong)function);
+		copy = zend_hash_index_find_ptr(&PMMPTHREAD_ZG(resolve), PMMPTHREAD_PTR_KEY(function));
 	} else {
 		ZEND_ASSERT(function->type == ZEND_USER_FUNCTION);
-		copy = zend_hash_index_find_ptr(&PMMPTHREAD_ZG(closure_base_op_arrays), (zend_ulong)function->op_array.opcodes);
+		copy = zend_hash_index_find_ptr(&PMMPTHREAD_ZG(closure_base_op_arrays), PMMPTHREAD_PTR_KEY(function->op_array.opcodes));
 	}
 
 	if (copy) {
@@ -693,12 +708,14 @@ static zend_function* pmmpthread_copy_function_ex(const pmmpthread_ident_t* owne
 		//closure objects copy their base zend_function, but don't copy the opcodes
 		//this means we can use the opcodes to identify the base op_array a closure should use for zend_create_closure()
 		//instead of creating a bunch of useless copies
-		zend_hash_index_add_ptr(&PMMPTHREAD_ZG(closure_base_op_arrays), (zend_ulong)function->op_array.opcodes, copy);
+		zend_hash_index_add_ptr(&PMMPTHREAD_ZG(closure_base_op_arrays), PMMPTHREAD_PTR_KEY(function->op_array.opcodes), copy);
 
 		//this may be the only place the definition is referenced from - make sure it doesn't get destroyed
 		pmmpthread_add_function_ref(copy);
+
+		pmmpthread_prepare_function_dependencies(owner, copy);
 	} else {
-		zend_hash_index_update_ptr(&PMMPTHREAD_ZG(resolve), (zend_ulong)function, copy);
+		zend_hash_index_update_ptr(&PMMPTHREAD_ZG(resolve), PMMPTHREAD_PTR_KEY(function), copy);
 	}
 
 	return copy;
@@ -787,35 +804,23 @@ zend_result pmmpthread_copy_closure(const pmmpthread_ident_t* owner, zend_closur
 		);
 	} else {
 		HashTable* static_variables = NULL;
-#if PHP_VERSION_ID >= 80200
-		HashTable* static_variables_ptr = NULL;
-#endif
 		if (closure_obj->func.type == ZEND_USER_FUNCTION){
-			if (closure_obj->func.op_array.static_variables != NULL) {
-				//if this is a real closure, we need to update the static_variables from the original closure object
-				//so that the copied closure has the correct use()d variables
-				//this should not modify the original closure
-				//these have to be copied before the closure is created, to maintain the original behaviour
-				static_variables = pmmpthread_copy_statics(owner, closure_obj->func.op_array.static_variables);
-			}
-#if PHP_VERSION_ID >= 80200
-			//in PHP 8.5, the static_variables field is not overwritten when creating a new closure, so it may be different
-			//than the static_variables_ptr, which will typically contain bound variables
-			HashTable *origin_static_variables_ptr = ZEND_MAP_PTR_GET(closure_obj->func.op_array.static_variables_ptr);
-			if (origin_static_variables_ptr != NULL) {
-				if (origin_static_variables_ptr != closure_obj->func.op_array.static_variables) {
-					static_variables_ptr = pmmpthread_copy_statics(owner, origin_static_variables_ptr);
-				} else {
-					static_variables_ptr = static_variables;
-				}
-			}
+			//copy the original closure's use()d variables without modifying it
+			//these have to be copied before the closure is created, to maintain the original behaviour
+#if PHP_VERSION_ID >= 80500
+			//since 8.5 a closure only owns its bound table; static_variables is the definition's template, freed with the shared op_array
+			HashTable* bound = ZEND_MAP_PTR_GET(closure_obj->func.op_array.static_variables_ptr);
+#else
+			HashTable* bound = closure_obj->func.op_array.static_variables;
 #endif
+			if (bound != NULL) {
+				static_variables = pmmpthread_copy_statics(owner, bound);
+			}
 		}
 
 		//we don't know where the definition for this closure is, so create a definition from this copy of it
-		//assume there are no real static variables and don't copy them from this definition (thread-safe
-		//closures are not allowed to have static variables anyway)
-		func_def = pmmpthread_copy_function_ex(owner, &closure_obj->func, 0);
+		//before 8.5 the closure's static_variables are its bound variables, so they mustn't go into the definition
+		func_def = pmmpthread_copy_function_ex(owner, &closure_obj->func, PHP_VERSION_ID >= 80500);
 
 		zend_create_closure(
 			pzval,
@@ -831,19 +836,13 @@ zend_result pmmpthread_copy_closure(const pmmpthread_ident_t* owner, zend_closur
 				//the closure may have static_variables allocated from its original creation by zend_compile.c
 				zend_array_release(ZEND_MAP_PTR_GET(new_closure->func.op_array.static_variables_ptr));
 			}
+#if PHP_VERSION_ID < 80500
 			new_closure->func.op_array.static_variables = static_variables;
-#if PHP_VERSION_ID >= 80200
-			ZEND_MAP_PTR_INIT(
-				new_closure->func.op_array.static_variables_ptr,
-				static_variables_ptr
-			);
-#else
-			//this is not strictly necessary for 8.1, but is here for the sake of completeness
-			ZEND_MAP_PTR_INIT(
-				new_closure->func.op_array.static_variables_ptr,
-				&new_closure->func.op_array.static_variables
-			);
 #endif
+			ZEND_MAP_PTR_INIT(
+				new_closure->func.op_array.static_variables_ptr,
+				static_variables
+			);
 		}
 
 		//pmmpthread_copy_function() adds a ref to any cached function returned - make sure we don't leak the original definition
