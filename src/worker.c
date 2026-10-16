@@ -24,13 +24,8 @@
 #include "worker.h"
 #include "queue.h"
 
-#if PHP_VERSION_ID >= 80300
 #	include <Zend/zend_hrtime.h>
 #	define pmmpthread_hrtime() zend_hrtime()
-#else
-#	include <ext/standard/hrtime.h>
-#	define pmmpthread_hrtime() php_hrtime_current()
-#endif
 
 //only a hint, the queue itself is always checked under the monitor
 #ifdef HAVE_VALGRIND

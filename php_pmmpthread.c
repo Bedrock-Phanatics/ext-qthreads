@@ -38,8 +38,8 @@
 #	error "pmmpthread requires that Thread Safety is enabled, add --enable-maintainer-zts to your PHP build configuration"
 #endif
 
-#if PHP_VERSION_ID < 80100
-#	error "pmmpthread requires PHP 8.1 or later"
+#if PHP_VERSION_ID < 80400
+#	error "pmmpthread requires PHP 8.4 or later"
 #endif
 
 #if COMPILE_DL_PMMPTHREAD

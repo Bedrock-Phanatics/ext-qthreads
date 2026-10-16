@@ -58,11 +58,7 @@ void pmmpthread_store_destroy(pmmpthread_store_t* store) {
 /* {{{ Prepares local property table to cache items.
 We may use integer keys, so the ht must be explicitly initialized to avoid zend allocating it as packed, which will cause assert failures. */
 static void pmmpthread_store_init_local_properties(zend_object* object) {
-#if PHP_VERSION_ID >= 80400
 	zend_std_get_properties_ex(object);
-#else
-	rebuild_object_properties(object);
-#endif
 	if (HT_FLAGS(object->properties) & HASH_FLAG_UNINITIALIZED) {
 		zend_hash_real_init_mixed(object->properties);
 	}

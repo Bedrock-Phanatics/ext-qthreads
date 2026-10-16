@@ -124,9 +124,7 @@ static void prepare_class_constants(const pmmpthread_ident_t* source, zend_class
 			rc->attributes = pmmpthread_copy_attributes(source, zc->attributes, zc->ce->type == ZEND_INTERNAL_CLASS ? NULL : zc->ce->info.user.filename);
 		}
 
-#if PHP_VERSION_ID >= 80300
 		pmmpthread_copy_zend_type(&zc->type, &rc->type);
-#endif
 
 	} ZEND_HASH_FOREACH_END();
 } /* }}} */
@@ -173,14 +171,7 @@ static void prepare_class_statics(const pmmpthread_ident_t* source, zend_class_e
 			parent = parent->parent;
 		}
 
-#if PHP_VERSION_ID >= 80200
 		//zend_initialize_class_data() already inits the MAP_PTR(static_members_table) to NULL, so nothing to do here
-#else
-		if (!ZEND_MAP_PTR(prepared->static_members_table)) {
-			ZEND_MAP_PTR_INIT(prepared->static_members_table, zend_arena_alloc(&CG(arena), sizeof(zval*)));
-			ZEND_MAP_PTR_SET(prepared->static_members_table, NULL);
-		}
-#endif
 	} else prepared->default_static_members_count = 0;
 } /* }}} */
 
@@ -255,7 +246,6 @@ static zend_property_info* copy_property_info(
 		dup->attributes = pmmpthread_copy_attributes(source, info->attributes, info->ce->type == ZEND_INTERNAL_CLASS ? NULL : info->ce->info.user.filename);
 	}
 
-#if PHP_VERSION_ID >= 80400
 	if (info->prototype) {
 		dup->prototype = copy_property_info(source, candidate, prepared, info->prototype);
 	} else dup->prototype = NULL;
@@ -280,7 +270,6 @@ static zend_property_info* copy_property_info(
 			} else dup->hooks[i] = NULL;
 		}
 	} else dup->hooks = NULL;
-#endif
 
 	return dup;
 }
@@ -407,7 +396,6 @@ while(0)
 		SET_FUNC_REF(iterator_funcs_ptr, rewind);
 	} else prepared->iterator_funcs_ptr = NULL;
 
-#if PHP_VERSION_ID >= 80200
 	if (candidate->arrayaccess_funcs_ptr) {
 		prepared->arrayaccess_funcs_ptr = zend_arena_alloc(&CG(arena), sizeof(zend_class_arrayaccess_funcs));
 		SET_FUNC_REF(arrayaccess_funcs_ptr, offsetget);
@@ -415,7 +403,6 @@ while(0)
 		SET_FUNC_REF(arrayaccess_funcs_ptr, offsetset);
 		SET_FUNC_REF(arrayaccess_funcs_ptr, offsetunset);
 	} else prepared->arrayaccess_funcs_ptr = NULL;
-#endif
 #undef SET_FUNC_REF
 } /* }}} */
 
@@ -610,17 +597,11 @@ static zend_class_entry* pmmpthread_copy_entry(const pmmpthread_ident_t* source,
 
 	memcpy(&prepared->info.user, &candidate->info.user, sizeof(candidate->info.user));
 	if ((PMMPTHREAD_ZG(options) & PMMPTHREAD_INHERIT_COMMENTS) &&
-#if PHP_VERSION_ID >= 80400
 	(candidate->doc_comment)) {
 		prepared->doc_comment = pmmpthread_copy_string(candidate->doc_comment);
 	} else prepared->doc_comment = NULL;
 	prepared->num_hooked_props = candidate->num_hooked_props;
 	prepared->num_hooked_prop_variance_checks = candidate->num_hooked_prop_variance_checks;
-#else
-	(candidate->info.user.doc_comment)) {
-		prepared->info.user.doc_comment = pmmpthread_copy_string(candidate->info.user.doc_comment);
-	} else prepared->info.user.doc_comment = NULL;
-#endif
 	
 	if (candidate->attributes) {
 		prepared->attributes = pmmpthread_copy_attributes(source, candidate->attributes, prepared->info.user.filename);
@@ -792,11 +773,7 @@ static void* pmmpthread_exports_find(const pmmpthread_ident_t* source, zend_bool
 
 /* {{{ see pmmpthread_isolate_classes */
 static zend_op_array *(*pmmpthread_original_compile_file)(zend_file_handle *file_handle, int type);
-#if PHP_VERSION_ID >= 80200
 static zend_op_array *(*pmmpthread_original_compile_string)(zend_string *source_string, const char *filename, zend_compile_position position);
-#else
-static zend_op_array *(*pmmpthread_original_compile_string)(zend_string *source_string, const char *filename);
-#endif
 
 //threads copying an anonymous class from us must never see it mid-link, which the first `new class` does to it in place,
 //so while it's unlinked they're handed this pristine copy, which is never used here. It's kept in the class table under
@@ -873,13 +850,8 @@ static zend_op_array* pmmpthread_compile_file(zend_file_handle *file_handle, int
 	return op_array;
 }
 
-#if PHP_VERSION_ID >= 80200
 static zend_op_array* pmmpthread_compile_string(zend_string *source_string, const char *filename, zend_compile_position position) {
 	zend_op_array* op_array = pmmpthread_original_compile_string(source_string, filename, position);
-#else
-static zend_op_array* pmmpthread_compile_string(zend_string *source_string, const char *filename) {
-	zend_op_array* op_array = pmmpthread_original_compile_string(source_string, filename);
-#endif
 	pmmpthread_isolate_new_classes();
 	return op_array;
 }

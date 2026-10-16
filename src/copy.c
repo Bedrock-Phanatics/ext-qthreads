@@ -443,11 +443,6 @@ static zend_op* pmmpthread_copy_opcodes(zend_op_array *op_array, zval *literals,
 				case ZEND_FAST_CALL:
 					opline->op1.jmp_addr = &copy[opline->op1.jmp_addr - op_array->opcodes];
 					break;
-#if PHP_VERSION_ID < 80200
-				case ZEND_JMPZNZ:
-					/* relative extended_value don't have to be changed */
-					/* break omitted intentionally */
-#endif
 				case ZEND_JMPZ:
 				case ZEND_JMPNZ:
 				case ZEND_JMPZ_EX:
@@ -458,12 +453,8 @@ static zend_op* pmmpthread_copy_opcodes(zend_op_array *op_array, zval *literals,
 				case ZEND_FE_RESET_RW:
 				case ZEND_ASSERT_CHECK:
 				case ZEND_JMP_NULL:
-#if PHP_VERSION_ID >= 80300
 				case ZEND_BIND_INIT_STATIC_OR_JMP:
-#endif
-#if PHP_VERSION_ID >= 80400
 				case ZEND_JMP_FRAMELESS:
-#endif
 					opline->op2.jmp_addr = &copy[opline->op2.jmp_addr - op_array->opcodes];
 					break;
 				case ZEND_CATCH:
@@ -602,12 +593,7 @@ static inline zend_function* pmmpthread_copy_user_function(const pmmpthread_iden
 	 * heap runtime caches are only used by closures' copies of function definitions, not the definition itself
 	 */
 	op_array->fn_flags &= ~ZEND_ACC_HEAP_RT_CACHE;
-#if PHP_VERSION_ID >= 80200
 	ZEND_MAP_PTR_INIT(op_array->run_time_cache, NULL);
-#else
-	ZEND_MAP_PTR_INIT(op_array->run_time_cache, zend_arena_alloc(&CG(arena), sizeof(void*)));
-	ZEND_MAP_PTR_SET(op_array->run_time_cache, NULL);
-#endif
 
 	if (op_array->doc_comment) {
 		op_array->doc_comment = pmmpthread_copy_string(op_array->doc_comment);
@@ -661,22 +647,15 @@ static inline zend_function* pmmpthread_copy_user_function(const pmmpthread_iden
 	}
 
 	if (copy_static_variables && op_array->static_variables) {
-#if PHP_VERSION_ID >= 80200
 		//when opcache owns the op_array, share its template like the rest of it: destroy_op_array() wouldn't free a copy
-		//8.1 still needs a copy, since static_variables_ptr points at this table and it gets written to
 		if (op_array->refcount)
-#endif
 		{
 			op_array->static_variables = pmmpthread_copy_statics(owner, op_array->static_variables);
 		}
 	} else {
 		op_array->static_variables = NULL;
 	}
-#if PHP_VERSION_ID >= 80200
 	ZEND_MAP_PTR_INIT(op_array->static_variables_ptr, NULL);
-#else
-	ZEND_MAP_PTR_INIT(op_array->static_variables_ptr, &op_array->static_variables);
-#endif
 
 	return copy;
 } /* }}} */
@@ -860,18 +839,10 @@ zend_result pmmpthread_copy_closure(const pmmpthread_ident_t* owner, zend_closur
 #if PHP_VERSION_ID < 80500
 			new_closure->func.op_array.static_variables = static_variables;
 #endif
-#if PHP_VERSION_ID >= 80200
 			ZEND_MAP_PTR_INIT(
 				new_closure->func.op_array.static_variables_ptr,
 				static_variables
 			);
-#else
-			//this is not strictly necessary for 8.1, but is here for the sake of completeness
-			ZEND_MAP_PTR_INIT(
-				new_closure->func.op_array.static_variables_ptr,
-				&new_closure->func.op_array.static_variables
-			);
-#endif
 		}
 
 		//pmmpthread_copy_function() adds a ref to any cached function returned - make sure we don't leak the original definition

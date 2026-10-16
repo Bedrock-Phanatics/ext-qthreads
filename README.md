@@ -24,6 +24,7 @@ Legacy documentation for pthreads v2/v3 can be found [here](http://docs.php.net/
 pmmpthread is used in production on thousands of [PocketMine-MP](https://github.com/pmmp/PocketMine-MP) servers worldwide, and qthreads is built for Quark. The focus is on performance and stability.
 
 ## Changes in qthreads
+- Requires PHP 8.4 or later
 - `ThreadSafeQueue`, a FIFO queue for passing values between threads without `synchronized()` loops
 - Much faster `Pool`/`Worker` task submission and collection, especially with several workers (see [Worker spinning](#worker-spinning))
 - Faster `ThreadSafeArray` merges, object creation and connections

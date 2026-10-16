@@ -156,17 +156,10 @@ ZEND_END_MODULE_GLOBALS(pmmpthread)
 #define PMMPTHREAD_MAP_PTR_PTR2OFFSET(ls, ptr) \
 	((void*)(((char*)(ptr)) - ((char*)PMMPTHREAD_CG(ls, map_ptr_base))))
 
-#if PHP_VERSION_ID >= 80200
 #define PMMPTHREAD_MAP_PTR_GET(ls, ptr) \
 	(ZEND_MAP_PTR_IS_OFFSET(ptr) ? \
 		*PMMPTHREAD_MAP_PTR_OFFSET2PTR(ls, (uintptr_t)ZEND_MAP_PTR(ptr)) : \
 		((void*)(ZEND_MAP_PTR(ptr))))
-#else
-#define PMMPTHREAD_MAP_PTR_GET(ls, ptr) \
-	(*(ZEND_MAP_PTR_IS_OFFSET(ptr) ? \
-		PMMPTHREAD_MAP_PTR_OFFSET2PTR(ls, (uintptr_t)ZEND_MAP_PTR(ptr)) : \
-		((void**)(ZEND_MAP_PTR(ptr)))))
-#endif
 
 /* {{{ */
 typedef struct _pmmpthread_call_t {
@@ -176,11 +169,7 @@ typedef struct _pmmpthread_call_t {
 
 #define PMMPTHREAD_CALL_EMPTY {empty_fcall_info, empty_fcall_info_cache}
 
-#if PHP_VERSION_ID >= 80400
 #define PMMPTHREAD_OBJECT_PROPERTY(prop_info) ((prop_info->flags & (ZEND_ACC_STATIC | ZEND_ACC_VIRTUAL)) == 0)
-#else
-#define PMMPTHREAD_OBJECT_PROPERTY(prop_info) ((prop_info->flags & ZEND_ACC_STATIC) == 0)
-#endif
 
 /* this is a copy of the same struct in zend_closures.c, which unfortunately isn't exported */
 typedef struct _zend_closure {
