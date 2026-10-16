@@ -42,7 +42,10 @@ zend_string* pmmpthread_copy_string(zend_string* s) {
 	else {
 		ret = zend_string_dup(s, GC_FLAGS(s) & IS_STR_PERSISTENT);
 	}
-	ZSTR_H(ret) = ZSTR_H(s);
+	if (ret != s) {
+		//copying from our own thread can give back the same interned string, which other threads may be reading
+		ZSTR_H(ret) = ZSTR_H(s);
+	}
 	return ret;
 }
 
