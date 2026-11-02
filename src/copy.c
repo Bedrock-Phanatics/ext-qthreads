@@ -132,7 +132,10 @@ static HashTable* pmmpthread_copy_hash(const pmmpthread_ident_t* owner, HashTabl
 		}
 
 		if (key) {
-			zend_hash_update(ht, pmmpthread_copy_string(key), &newzval);
+			//the table takes its own reference to the key
+			zend_string* copied = pmmpthread_copy_string(key);
+			zend_hash_update(ht, copied, &newzval);
+			zend_string_release(copied);
 		}
 		else {
 			zend_hash_index_update(ht, h, &newzval);
