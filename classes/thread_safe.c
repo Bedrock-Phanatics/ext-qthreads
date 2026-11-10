@@ -84,11 +84,9 @@ ThreadSafe_method(synchronized)
 	call.fci.retval = return_value;
 
 	if (pmmpthread_monitor_lock(&threaded->monitor)) {
-		/* synchronize property tables */
 		pmmpthread_store_sync_local_properties(Z_OBJ_P(getThis()));
 
 		zend_try {
-			/* call the closure */
 			zend_call_function(&call.fci, &call.fcc);
 		} zend_catch {
 			bailed = 1;

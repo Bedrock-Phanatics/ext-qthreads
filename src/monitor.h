@@ -36,8 +36,8 @@ typedef struct _pmmpthread_monitor_t {
 #define PMMPTHREAD_MONITOR_EXIT            (1<<6)
 #define PMMPTHREAD_MONITOR_AWAIT_JOIN      (1<<7)
 
-//the monitors this thread holds, innermost last. A fatal error jumps over the code that would have unlocked them.
-//Kept small as it lives in static TLS, deeper ones just aren't unwound
+//the monitors this thread holds, innermost last, as a fatal error jumps over the code that would have unlocked them.
+//Kept small since it lives in static TLS, deeper ones just stay locked
 #define PMMPTHREAD_MONITOR_HELD_MAX 8
 
 typedef struct _pmmpthread_monitor_held_t {
