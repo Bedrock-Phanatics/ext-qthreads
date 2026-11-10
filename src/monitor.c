@@ -79,7 +79,7 @@ pmmpthread_monitor_state_t pmmpthread_monitor_check(pmmpthread_monitor_t *m, pmm
 	return result;
 }
 
-int pmmpthread_monitor_wait(pmmpthread_monitor_t *m, long timeout) {
+int pmmpthread_monitor_wait(pmmpthread_monitor_t *m, zend_long timeout) {
 	struct timeval time;
 	struct timespec spec;
 

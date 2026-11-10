@@ -78,7 +78,7 @@ static zend_always_inline int pmmpthread_monitor_notify_one(pmmpthread_monitor_t
 }
 
 pmmpthread_monitor_state_t pmmpthread_monitor_check(pmmpthread_monitor_t *m, pmmpthread_monitor_state_t state);
-int pmmpthread_monitor_wait(pmmpthread_monitor_t *m, long timeout);
+int pmmpthread_monitor_wait(pmmpthread_monitor_t *m, zend_long timeout);
 void pmmpthread_monitor_wait_until(pmmpthread_monitor_t *m, pmmpthread_monitor_state_t state);
 void pmmpthread_monitor_add(pmmpthread_monitor_t *m, pmmpthread_monitor_state_t state);
 void pmmpthread_monitor_remove(pmmpthread_monitor_t *m, pmmpthread_monitor_state_t state);
