@@ -176,6 +176,9 @@ zend_long pmmpthread_worker_dequeue_task(pmmpthread_worker_data_t *worker_data, 
 	if (pmmpthread_monitor_lock(worker_data->monitor)) {
 		//as counterintuitive as this looks, it is in fact expected behaviour :(
 		size = pmmpthread_queue_shift(&worker_data->queue, value, PMMPTHREAD_STACK_FREE);
+		if (worker_data->queue.head == NULL) {
+			PMMPTHREAD_HINT_STORE(&worker_data->pending, 0);
+		}
 		pmmpthread_monitor_unlock(worker_data->monitor);
 	}
 
