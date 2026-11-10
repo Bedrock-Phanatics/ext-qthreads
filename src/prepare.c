@@ -810,8 +810,8 @@ static void pmmpthread_snapshot_anon_class(zend_class_entry* ce) {
 static void pmmpthread_isolate_new_classes(void) {
 	Bucket* start = CG(class_table)->arData;
 	Bucket* bucket = start + CG(class_table)->nNumUsed;
-	zend_class_entry* anon[16];
-	uint32_t anon_count = 0;
+	zend_class_entry** anon = NULL;
+	uint32_t anon_count = 0, anon_size = 0;
 
 	//new classes are at the end, and everything before them already has a slot
 	while (bucket-- > start) {
@@ -827,20 +827,20 @@ static void pmmpthread_isolate_new_classes(void) {
 		if (!(ce->ce_flags & ZEND_ACC_IMMUTABLE)) {
 			ZEND_MAP_PTR_NEW(ce->mutable_data);
 			if ((ce->ce_flags & (ZEND_ACC_ANON_CLASS|ZEND_ACC_LINKED)) == ZEND_ACC_ANON_CLASS) {
-				if (anon_count == sizeof(anon) / sizeof(anon[0])) {
-					//snapshotting adds to the table, so only once we're done walking it
-					while (anon_count > 0) {
-						pmmpthread_snapshot_anon_class(anon[--anon_count]);
-					}
-					pmmpthread_isolate_new_classes();
-					return;
+				if (anon_count == anon_size) {
+					anon_size = anon_size ? anon_size * 2 : 16;
+					anon = safe_erealloc(anon, anon_size, sizeof(zend_class_entry*), 0);
 				}
 				anon[anon_count++] = ce;
 			}
 		}
 	}
+	//snapshotting adds to the table, so only once we're done walking it
 	while (anon_count > 0) {
 		pmmpthread_snapshot_anon_class(anon[--anon_count]);
+	}
+	if (anon != NULL) {
+		efree(anon);
 	}
 }
 
