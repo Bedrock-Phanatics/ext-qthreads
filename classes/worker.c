@@ -114,15 +114,15 @@ Worker_method(collect)
 		Z_PARAM_FUNC(call.fci, call.fcc)
 	ZEND_PARSE_PARAMETERS_END();
 
-	if (!ZEND_NUM_ARGS()) {
-		PMMPTHREAD_WORKER_COLLECTOR_INIT(call, Z_OBJ_P(getThis()));
-	}
-
 	if (!PMMPTHREAD_IN_CREATOR(thread)) {
 		zend_throw_exception_ex(spl_ce_RuntimeException, 0,
 			"only the creator of this %s may call collect",
 			thread->std.ce->name->val);
 		return;
+	}
+
+	if (!ZEND_NUM_ARGS()) {
+		PMMPTHREAD_WORKER_COLLECTOR_INIT(call, Z_OBJ_P(getThis()));
 	}
 
 	RETVAL_LONG(pmmpthread_worker_collect_tasks(thread->worker_data, &call, pmmpthread_worker_collect_function));
