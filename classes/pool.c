@@ -188,6 +188,12 @@ Pool_method(submit) {
 				zend_read_property(Z_OBJCE_P(getThis()), Z_OBJ_P(getThis()), ZEND_STRL("workerOptions"), 1, &tmp_options)));
 
 			zend_call_method_with_1_params(Z_OBJ_P(&worker), Z_OBJCE(worker), NULL, "start", NULL, &options);
+
+			if (EG(exception)) {
+				//kept, it would take tasks it never runs
+				zval_ptr_dtor(&worker);
+				RETURN_THROWS();
+			}
 		}
 
 		selected = zend_hash_index_update(
