@@ -38,11 +38,9 @@ typedef struct _pmmpthread_queue {
 void pmmpthread_queue_clean(pmmpthread_queue* queue);
 void pmmpthread_queue_push(pmmpthread_queue* queue, pmmpthread_queue_item_t* item);
 void pmmpthread_queue_push_new(pmmpthread_queue* queue, zval* value);
-void pmmpthread_queue_unshift(pmmpthread_queue* queue, pmmpthread_queue_item_t* item);
 
 zend_long pmmpthread_queue_remove(pmmpthread_queue* queue, pmmpthread_queue_item_t* item, zval* value, int garbage);
 
 zend_long pmmpthread_queue_shift(pmmpthread_queue* queue, zval* value, int garbage);
-zend_long pmmpthread_queue_pop(pmmpthread_queue* queue, zval* value, int garbage);
 
 #endif

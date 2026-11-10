@@ -55,22 +55,6 @@ void pmmpthread_queue_push_new(pmmpthread_queue* queue, zval* value) {
 	pmmpthread_queue_push(queue, pmmpthread_queue_item_new(value));
 }
 
-void pmmpthread_queue_unshift(pmmpthread_queue* queue, pmmpthread_queue_item_t* item) {
-	if (!queue->head) {
-		queue->tail = item;
-		queue->head = item;
-		set_prev_and_next(item, NULL, NULL);
-	} else {
-		queue->head->prev = item;
-		set_prev_and_next(item, NULL, queue->head);
-		queue->head = item;
-	}
-}
-
-void pmmpthread_queue_unshift_new(pmmpthread_queue* queue, zval* value) {
-	pmmpthread_queue_unshift(queue, pmmpthread_queue_item_new(value));
-}
-
 zend_long pmmpthread_queue_remove(pmmpthread_queue* queue, pmmpthread_queue_item_t* item, zval* value, int garbage) {
 	if (!item) {
 		value = NULL;
@@ -113,8 +97,4 @@ zend_long pmmpthread_queue_remove(pmmpthread_queue* queue, pmmpthread_queue_item
 
 zend_long pmmpthread_queue_shift(pmmpthread_queue* queue, zval* value, int garbage) {
 	return pmmpthread_queue_remove(queue, queue->head, value, garbage);
-}
-
-zend_long pmmpthread_queue_pop(pmmpthread_queue* queue, zval* value, int garbage) {
-	return pmmpthread_queue_remove(queue, queue->tail, value, garbage);
 }
