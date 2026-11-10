@@ -244,7 +244,7 @@ jobs:
           $cdb = "${env:ProgramFiles(x86)}\Windows Kits\10\Debuggers\x64\cdb.exe"
           # test processes run files from here, so only they get killed
           $testsDir = "${{ github.workspace }}\tests"
-          $runner = Start-Process .\php.exe -ArgumentList ".\SDK\script\run-tests.php -P -q --show-diff --show-slow 30000 --set-timeout 900 -n -c .\php.ini $testsDir" -NoNewWindow -PassThru
+          $runner =Start-Process .\php.exe -ArgumentList ".\SDK\script\run-tests.php -P -q --show-diff --show-slow 30000 --set-timeout 900 -n -c .\php.ini $testsDir" -NoNewWindow -PassThru
           $null = $runner.Handle
           while (!$runner.WaitForExit(5000)) {
             Get-CimInstance Win32_Process -Filter "Name='php.exe'" |
@@ -258,6 +258,19 @@ jobs:
               }
           }
           exit $runner.ExitCode
+
+      - name: Debug crashes
+        if: failure()
+        working-directory: bin
+        timeout-minutes: 10
+        run: |
+          # run-tests only reports a crash's exit code, so rerun crashed tests with their children under the debugger
+          $cdb = "${env:ProgramFiles(x86)}\Windows Kits\10\Debuggers\x64\cdb.exe"
+          $crashed = Get-ChildItem "${{ github.workspace }}\tests\*.out" | Where-Object { (Get-Content $_ -Raw) -match "Termsig=" } | ForEach-Object { [IO.Path]::ChangeExtension($_.FullName, ".phpt") }
+          foreach ($t in $crashed) {
+            echo "===== $t"
+            & $cdb -o -g -G -lines -y "$pwd;$pwd\ext" -c ".lastevent; .ecxr; kn 40; ~*kn 30; q" .\php.exe .\SDK\script\run-tests.php -q -n -c .\php.ini $t 2>&1 | ForEach-Object { "$_" } | Where-Object { $_ -notmatch "^(ModLoad|Symbol search|Executable search|NatVis)" } | Select-Object -Last 300
+          }
 
       - name: Upload test results
         if: always()
