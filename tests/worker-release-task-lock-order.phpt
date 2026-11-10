@@ -18,7 +18,11 @@ $rounds = getenv("USE_ZEND_ALLOC") === "0" && getenv("USE_TRACKED_ALLOC") === fa
 for($i = 0; $i < $rounds; $i++){
 	$task = new Task();
 	$worker->stack($task);
-	while($worker->collect() > 0);
+	$worker->synchronized(function() use ($worker) : void{
+		while($worker->collect() > 0){
+			$worker->wait();
+		}
+	});
 	//the worker drops its connection to the task about now
 	$task->synchronized(function() use ($worker) : void{
 		$worker->getStacked();
