@@ -133,6 +133,13 @@ zend_bool pmmpthread_globals_init(){
 
 /* {{{ */
 zend_bool pmmpthread_globals_lock(){
+	//mostly held for a few instructions, so retrying for a moment usually beats sleeping and being woken up
+	for (int i = 0; i < 64; i++) {
+		if (pmmpthread_monitor_trylock(&PMMPTHREAD_G(monitor))) {
+			return 1;
+		}
+		PMMPTHREAD_CPU_RELAX();
+	}
 	return pmmpthread_monitor_lock(&PMMPTHREAD_G(monitor));
 } /* }}} */
 

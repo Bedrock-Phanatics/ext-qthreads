@@ -81,6 +81,16 @@
 /* {{{ allocations are aligned, so a plain pointer key only uses a fraction of the buckets; rotating is lossless */
 #define PMMPTHREAD_PTR_KEY(p) ((((zend_ulong) (uintptr_t) (p)) >> 3) | (((zend_ulong) (uintptr_t) (p)) << (sizeof(zend_ulong) * 8 - 3))) /* }}} */
 
+#ifdef _MSC_VER
+#	define PMMPTHREAD_CPU_RELAX() YieldProcessor()
+#elif defined(__x86_64__) || defined(__i386__)
+#	define PMMPTHREAD_CPU_RELAX() __builtin_ia32_pause()
+#elif defined(__aarch64__)
+#	define PMMPTHREAD_CPU_RELAX() __asm__ __volatile__("yield")
+#else
+#	define PMMPTHREAD_CPU_RELAX() ((void) 0)
+#endif
+
 extern zend_class_entry *pmmpthread_ce_thread_safe;
 extern zend_class_entry *pmmpthread_ce_array;
 extern zend_class_entry *pmmpthread_ce_queue;

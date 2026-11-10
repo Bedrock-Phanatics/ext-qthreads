@@ -39,18 +39,10 @@
 #ifdef _MSC_VER
 #	define PMMPTHREAD_HINT_LOAD(p) (*(volatile zend_bool*) (p))
 #	define PMMPTHREAD_HINT_STORE(p, v) (*(volatile zend_bool*) (p) = (v))
-#	define PMMPTHREAD_CPU_RELAX() YieldProcessor()
 #else
 #	include <sched.h>
 #	define PMMPTHREAD_HINT_LOAD(p) __atomic_load_n((p), __ATOMIC_RELAXED)
 #	define PMMPTHREAD_HINT_STORE(p, v) __atomic_store_n((p), (v), __ATOMIC_RELAXED)
-#	if defined(__x86_64__) || defined(__i386__)
-#		define PMMPTHREAD_CPU_RELAX() __builtin_ia32_pause()
-#	elif defined(__aarch64__)
-#		define PMMPTHREAD_CPU_RELAX() __asm__ __volatile__("yield")
-#	else
-#		define PMMPTHREAD_CPU_RELAX() ((void) 0)
-#	endif
 #endif
 
 //waking a sleeping worker costs the submitter a syscall, often more than running a small task. So while tasks keep

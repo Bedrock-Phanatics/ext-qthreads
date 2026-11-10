@@ -52,14 +52,26 @@ void pmmpthread_monitor_destroy(pmmpthread_monitor_t* m);
 /* {{{ unlocks everything this thread locked since it held depth monitors */
 void pmmpthread_monitor_unwind(uint32_t depth); /* }}} */
 
-static zend_always_inline zend_bool pmmpthread_monitor_lock(pmmpthread_monitor_t *m) {
-	if (pthread_mutex_lock(&m->mutex) != 0) {
-		return 0;
-	}
+static zend_always_inline void pmmpthread_monitor_locked(pmmpthread_monitor_t *m) {
 	if (pmmpthread_monitor_held.depth < PMMPTHREAD_MONITOR_HELD_MAX) {
 		pmmpthread_monitor_held.monitors[pmmpthread_monitor_held.depth] = m;
 	}
 	pmmpthread_monitor_held.depth++;
+}
+
+static zend_always_inline zend_bool pmmpthread_monitor_lock(pmmpthread_monitor_t *m) {
+	if (pthread_mutex_lock(&m->mutex) != 0) {
+		return 0;
+	}
+	pmmpthread_monitor_locked(m);
+	return 1;
+}
+
+static zend_always_inline zend_bool pmmpthread_monitor_trylock(pmmpthread_monitor_t *m) {
+	if (pthread_mutex_trylock(&m->mutex) != 0) {
+		return 0;
+	}
+	pmmpthread_monitor_locked(m);
 	return 1;
 }
 
