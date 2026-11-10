@@ -779,9 +779,12 @@ zend_result pmmpthread_copy_closure(const pmmpthread_ident_t* owner, zend_closur
 			origin_class = closure_obj->func.common.scope;
 		}
 
+		//function tables are keyed by lowercase name, and the name itself belongs to another thread
+		zend_string* name = closure_obj->func.common.function_name;
+
 		if (origin_class != NULL) {
 			zend_class_entry* local_class = pmmpthread_prepare_single_class(owner, origin_class);
-			func_def = (zend_function*)zend_hash_find_ptr(&local_class->function_table, closure_obj->func.common.function_name);
+			func_def = (zend_function*)zend_hash_str_find_ptr_lc(&local_class->function_table, ZSTR_VAL(name), ZSTR_LEN(name));
 
 			if (func_def == NULL) {
 				//this could happen if a different version of the class was autoloaded onto this thread
@@ -791,14 +794,14 @@ zend_result pmmpthread_copy_closure(const pmmpthread_ident_t* owner, zend_closur
 						0,
 						"First-class callable references an unknown class method %s::%s()",
 						ZSTR_VAL(local_class->name),
-						ZSTR_VAL(closure_obj->func.common.function_name)
+						ZSTR_VAL(name)
 					);
 				}
-
+				zval_ptr_dtor(&this_zv);
 				return FAILURE;
 			}
 		} else {
-			func_def = (zend_function*)zend_hash_find_ptr(EG(function_table), closure_obj->func.common.function_name);
+			func_def = (zend_function*)zend_hash_str_find_ptr_lc(EG(function_table), ZSTR_VAL(name), ZSTR_LEN(name));
 
 			if (func_def == NULL) {
 				//the referenced function isn't available in the local EG(function_table)
@@ -809,9 +812,10 @@ zend_result pmmpthread_copy_closure(const pmmpthread_ident_t* owner, zend_closur
 						pmmpthread_ce_connection_exception,
 						0,
 						"First-class callable references an unknown function %s()",
-						ZSTR_VAL(closure_obj->func.common.function_name)
+						ZSTR_VAL(name)
 					);
 				}
+				zval_ptr_dtor(&this_zv);
 				return FAILURE;
 			}
 		}
