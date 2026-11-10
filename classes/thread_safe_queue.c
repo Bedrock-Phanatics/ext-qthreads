@@ -21,11 +21,7 @@
 /* {{{ proto void ThreadSafeQueue::push(mixed $value) */
 ThreadSafeQueue_method(push)
 {
-	pmmpthread_queue_object_t *queue = PMMPTHREAD_FETCH_QUEUE;
 	zval *value;
-	zend_result result = FAILURE;
-	uint32_t held = pmmpthread_monitor_held.depth;
-	zend_bool bailed = 0;
 
 	ZEND_PARSE_PARAMETERS_START_EX(ZEND_PARSE_PARAMS_THROW, 1, 1)
 		Z_PARAM_ZVAL(value)
@@ -36,40 +32,7 @@ ThreadSafeQueue_method(push)
 		RETURN_THROWS();
 	}
 
-	pthread_mutex_lock(&queue->mutex);
-	if (queue->closed) {
-		pthread_mutex_unlock(&queue->mutex);
-		zend_throw_exception_ex(spl_ce_RuntimeException, 0, "Cannot push to a closed %s", ZSTR_VAL(Z_OBJCE_P(getThis())->name));
-		RETURN_THROWS();
-	}
-	queue->pushing++;
-	pthread_mutex_unlock(&queue->mutex);
-
-	//consumers of a closed queue wait for us, so running out of memory here mustn't leave them waiting forever
-	zend_try {
-		result = pmmpthread_store_queue_push(Z_OBJ_P(getThis()), value);
-	} zend_catch {
-		bailed = 1;
-	} zend_end_try();
-
-	pthread_mutex_lock(&queue->mutex);
-	queue->pushing--;
-	if (result == SUCCESS) {
-		queue->available++;
-	}
-	if (queue->closed && queue->pushing == 0) {
-		//consumers may be waiting for this push before giving up on a closed queue
-		pthread_cond_broadcast(&queue->cond);
-	} else if (result == SUCCESS) {
-		pthread_cond_signal(&queue->cond);
-	}
-	pthread_mutex_unlock(&queue->mutex);
-
-	if (bailed) {
-		pmmpthread_monitor_unwind(held);
-		zend_bailout();
-	}
-	if (result == FAILURE && !EG(exception)) {
+	if (pmmpthread_store_queue_push(Z_OBJ_P(getThis()), value) == FAILURE && !EG(exception)) {
 		zend_throw_error(
 			pmmpthread_ce_nts_value_error,
 			"Cannot push non-thread-safe value of type %s to %s",

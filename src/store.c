@@ -1552,11 +1552,32 @@ zend_result pmmpthread_store_queue_push(zend_object *object, zval *value) {
 	//a consumer may free the storage as soon as it's queued
 	needs_owner = pmmpthread_store_storage_needs_owner(&zstorage);
 
+	//consumers of a closed queue wait for pushes in progress, so nothing may bail out until this one is counted
+	pthread_mutex_lock(&queue->mutex);
+	if (queue->closed) {
+		pthread_mutex_unlock(&queue->mutex);
+		pmmpthread_store_storage_dtor(&zstorage);
+		zval_ptr_dtor(&coerced);
+		zend_throw_exception_ex(spl_ce_RuntimeException, 0, "Cannot push to a closed %s", ZSTR_VAL(object->ce->name));
+		return FAILURE;
+	}
+	queue->pushing++;
+	pthread_mutex_unlock(&queue->mutex);
+
 	pthread_mutex_lock(&queue->items);
 	seq = queue->tail++;
 	zend_hash_index_add_new(&queue->base.props.hash, seq, &zstorage);
 	head = queue->head;
 	pthread_mutex_unlock(&queue->items);
+
+	pthread_mutex_lock(&queue->mutex);
+	queue->available++;
+	if (--queue->pushing == 0 && queue->closed) {
+		pthread_cond_broadcast(&queue->cond);
+	} else {
+		pthread_cond_signal(&queue->cond);
+	}
+	pthread_mutex_unlock(&queue->mutex);
 
 	if (needs_owner) {
 		pmmpthread_queue_keepalive_add(&queue->base, seq, value);
