@@ -226,12 +226,13 @@ void pmmpthread_store_full_sync_local_properties(zend_object *object) {
 		}
 	} ZEND_HASH_FOREACH_END();
 
+	pmmpthread_monitor_unlock(&threaded->ts_obj->monitor);
+
 	if (threaded->worker_data != NULL) {
 		pmmpthread_worker_sync_collectable_tasks(threaded->worker_data);
 	}
 
 	GC_UNPROTECT_RECURSION(&threaded->std);
-	pmmpthread_monitor_unlock(&threaded->ts_obj->monitor);
 } /* }}} */
 
 /* {{{ */

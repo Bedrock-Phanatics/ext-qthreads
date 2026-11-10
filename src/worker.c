@@ -64,7 +64,8 @@ struct _pmmpthread_worker_data_t {
 	pmmpthread_queue gc;
 	pmmpthread_queue_item_t *running;
 	zend_ulong tasks_collected;
-	pmmpthread_queue *collecting; //tasks the creator is running collectors on, see pmmpthread_worker_collect_tasks()
+	pmmpthread_queue collecting; //tasks the creator is running collectors on, see pmmpthread_worker_collect_tasks()
+	zend_bool in_collect;
 	zend_bool pending; //PMMPTHREAD_HINT_* only
 	zend_bool sleeping;
 	zend_bool spin_pays; //set by the last submitter, see pmmpthread_worker_submitted()
@@ -99,6 +100,7 @@ void pmmpthread_worker_data_free(pmmpthread_worker_data_t *worker_data) {
 	if (pmmpthread_monitor_lock(monitor)) {
 		pmmpthread_queue_clean(&worker_data->queue);
 		pmmpthread_queue_clean(&worker_data->gc);
+		pmmpthread_queue_clean(&worker_data->collecting);
 
 		//we should never be freeing worker_data for a worker with active tasks
 		ZEND_ASSERT(worker_data->running == NULL);
@@ -183,45 +185,46 @@ zend_long pmmpthread_worker_dequeue_task(pmmpthread_worker_data_t *worker_data, 
 zend_long pmmpthread_worker_collect_tasks(pmmpthread_worker_data_t *worker_data, pmmpthread_call_t *call, pmmpthread_worker_collect_function_t collect) {
 	zend_long size = 0;
 	zend_long tasks_collected = 0;
-	pmmpthread_queue done;
+	pmmpthread_queue *done = &worker_data->collecting;
 
 	if (!pmmpthread_monitor_lock(worker_data->monitor)) {
 		return 0;
 	}
-	if (worker_data->collecting) {
+	if (worker_data->in_collect) {
 		//called from a collector; collecting here too would mess up the order the worker frees its connections in
-		size = (worker_data->queue.size + worker_data->gc.size + worker_data->collecting->size) + (worker_data->running != NULL ? 1 : 0);
+		size = (worker_data->queue.size + worker_data->gc.size + done->size) + (worker_data->running != NULL ? 1 : 0);
 		pmmpthread_monitor_unlock(worker_data->monitor);
 		return size;
 	}
 	//the worker would block on its monitor while we run collectors and free tasks, so do that without it
-	done = worker_data->gc;
+	*done = worker_data->gc;
 	memset(&worker_data->gc, 0, sizeof(pmmpthread_queue));
-	worker_data->collecting = &done;
+	worker_data->in_collect = 1;
 	pmmpthread_monitor_unlock(worker_data->monitor);
 
-	while (done.head) {
-		pmmpthread_store_full_sync_local_properties(Z_OBJ(done.head->value));
-		if (!collect(call, &done.head->value)) {
+	while (done->head) {
+		pmmpthread_store_full_sync_local_properties(Z_OBJ(done->head->value));
+		if (!collect(call, &done->head->value)) {
 			break;
 		}
-		pmmpthread_queue_shift(&done, NULL, PMMPTHREAD_STACK_FREE);
+		pmmpthread_queue_shift(done, NULL, PMMPTHREAD_STACK_FREE);
 		tasks_collected++;
 	}
 
 	if (pmmpthread_monitor_lock(worker_data->monitor)) {
-		if (done.head) {
+		if (done->head) {
 			//uncollected tasks go back in front of the ones finished meanwhile
-			done.tail->next = worker_data->gc.head;
+			done->tail->next = worker_data->gc.head;
 			if (worker_data->gc.head) {
-				worker_data->gc.head->prev = done.tail;
+				worker_data->gc.head->prev = done->tail;
 			} else {
-				worker_data->gc.tail = done.tail;
+				worker_data->gc.tail = done->tail;
 			}
-			worker_data->gc.head = done.head;
-			worker_data->gc.size += done.size;
+			worker_data->gc.head = done->head;
+			worker_data->gc.size += done->size;
+			memset(done, 0, sizeof(pmmpthread_queue));
 		}
-		worker_data->collecting = NULL;
+		worker_data->in_collect = 0;
 		if (tasks_collected > 0) {
 			worker_data->tasks_collected += tasks_collected;
 			pmmpthread_monitor_add(worker_data->monitor, PMMPTHREAD_MONITOR_COLLECT_GARBAGE);
@@ -235,31 +238,33 @@ zend_long pmmpthread_worker_collect_tasks(pmmpthread_worker_data_t *worker_data,
 	return size;
 }
 
-/* {{{ Runs a pmmpthread_store_full_sync_local_properties() on every task in the GC queue, to ensure availability of properties */
-static void pmmpthread_worker_sync_tasks(pmmpthread_queue_item_t* item) {
-	while (item) {
-		pmmpthread_zend_object_t* threaded = PMMPTHREAD_FETCH_FROM(Z_OBJ(item->value));
-		if (pmmpthread_monitor_lock(&threaded->ts_obj->monitor)) {
-			pmmpthread_store_full_sync_local_properties(Z_OBJ(item->value));
-			pmmpthread_monitor_unlock(&threaded->ts_obj->monitor);
-		}
-		item = item->next;
+/* {{{ makes the properties of finished tasks available to the creator. Tasks take their own monitors while syncing,
+	which their users may hold while waiting for ours, so they're synced without it */
+void pmmpthread_worker_sync_collectable_tasks(pmmpthread_worker_data_t* worker_data) {
+	zval *tasks = NULL;
+	zend_long count = 0;
+
+	if (!pmmpthread_monitor_lock(worker_data->monitor)) {
+		return;
 	}
-}
-
-zend_result pmmpthread_worker_sync_collectable_tasks(pmmpthread_worker_data_t* worker_data) {
-	if (pmmpthread_monitor_lock(worker_data->monitor)) {
-		pmmpthread_worker_sync_tasks(worker_data->gc.head);
-		if (worker_data->collecting != NULL) {
-			//only the creator collects, and it's the one calling this
-			pmmpthread_worker_sync_tasks(worker_data->collecting->head);
+	if (worker_data->gc.size + worker_data->collecting.size > 0) {
+		tasks = safe_emalloc(worker_data->gc.size + worker_data->collecting.size, sizeof(zval), 0);
+		for (pmmpthread_queue_item_t* item = worker_data->gc.head; item != NULL; item = item->next) {
+			ZVAL_COPY(&tasks[count++], &item->value);
 		}
-
-		pmmpthread_monitor_unlock(worker_data->monitor);
-		return SUCCESS;
+		for (pmmpthread_queue_item_t* item = worker_data->collecting.head; item != NULL; item = item->next) {
+			ZVAL_COPY(&tasks[count++], &item->value);
+		}
 	}
+	pmmpthread_monitor_unlock(worker_data->monitor);
 
-	return FAILURE;
+	for (zend_long i = 0; i < count; i++) {
+		pmmpthread_store_full_sync_local_properties(Z_OBJ(tasks[i]));
+		zval_ptr_dtor(&tasks[i]);
+	}
+	if (tasks != NULL) {
+		efree(tasks);
+	}
 } /* }}} */
 
 static void pmmpthread_worker_spin(pmmpthread_worker_data_t *worker_data, uint64_t deadline) {
@@ -303,12 +308,20 @@ pmmpthread_monitor_state_t pmmpthread_worker_next_task(pmmpthread_worker_data_t 
 	if (pmmpthread_monitor_lock(monitor)) {
 		while (1) {
 			if (monitor->state & PMMPTHREAD_MONITOR_COLLECT_GARBAGE) {
-				for (zend_long i = 0; i < worker_data->tasks_collected; i++) {
-					pmmpthread_queue_shift(done_tasks_cache, NULL, PMMPTHREAD_STACK_FREE);
-				}
+				zend_long collected = worker_data->tasks_collected;
+
 				worker_data->tasks_collected = 0;
 				monitor->state &= ~PMMPTHREAD_MONITOR_COLLECT_GARBAGE;
 				pmmpthread_monitor_notify(monitor);
+				//releasing a task takes its monitor, which its users may hold while calling into this worker
+				pmmpthread_monitor_unlock(monitor);
+				while (collected-- > 0) {
+					pmmpthread_queue_shift(done_tasks_cache, NULL, PMMPTHREAD_STACK_FREE);
+				}
+				if (!pmmpthread_monitor_lock(monitor)) {
+					return PMMPTHREAD_MONITOR_JOINED;
+				}
+				continue;
 			}
 			if (worker_data->queue.head) {
 				if (worker_data->idle_since != 0) {
@@ -369,7 +382,7 @@ zend_get_gc_buffer* pmmpthread_worker_get_gc_extra(pmmpthread_worker_data_t* wor
 			item = item->next;
 		}
 
-		item = worker_data->collecting != NULL ? worker_data->collecting->head : NULL;
+		item = worker_data->collecting.head;
 		while (item != NULL) {
 			zend_get_gc_buffer_add_zval(buffer, &item->value);
 			item = item->next;
