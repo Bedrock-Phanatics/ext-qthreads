@@ -210,17 +210,17 @@ static zend_property_info* copy_property_info(
 	zend_class_entry *prepared,
 	const zend_property_info* info
 ) {
+	if (info->ce->type == ZEND_INTERNAL_CLASS) {
+		//shared by every thread, like the class itself
+		return (zend_property_info*) info;
+	}
+
 	zend_property_info* dup = zend_hash_index_find_ptr(&PMMPTHREAD_ZG(resolve), PMMPTHREAD_PTR_KEY(info));
 	if (dup) {
 		return dup;
 	}
 
-	if (info->ce->type == ZEND_INTERNAL_CLASS) {
-		dup = pemalloc(sizeof(zend_property_info), 1);
-	}
-	else {
-		dup = zend_arena_alloc(&CG(arena), sizeof(zend_property_info));
-	}
+	dup = zend_arena_alloc(&CG(arena), sizeof(zend_property_info));
 	memcpy(dup, info, sizeof(zend_property_info));
 
 	zend_hash_index_update_ptr(&PMMPTHREAD_ZG(resolve), PMMPTHREAD_PTR_KEY(info), dup);
