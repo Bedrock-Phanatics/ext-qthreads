@@ -396,27 +396,22 @@ zend_get_gc_buffer* pmmpthread_worker_get_gc_extra(pmmpthread_worker_data_t* wor
 
 /* {{{ */
 zend_bool pmmpthread_worker_collect_function(pmmpthread_call_t* call, zval* collectable) {
-	zval result;
+	zval param, result;
 	zend_bool remove = 0;
 
+	//a by-reference collector would turn the queued task into a reference, so it gets a copy
+	ZVAL_COPY(&param, collectable);
 	ZVAL_UNDEF(&result);
 
 	call->fci.retval = &result;
+	call->fci.params = &param;
+	call->fci.param_count = 1;
 
-	zend_fcall_info_argn(&call->fci, 1, collectable);
-
-	if (zend_call_function(&call->fci, &call->fcc) != SUCCESS) {
-		return remove;
-	}
-
-	zend_fcall_info_args_clear(&call->fci, 1);
-
-	if (Z_TYPE(result) != IS_UNDEF) {
-		if (zend_is_true(&result)) {
-			remove = 1;
-		}
+	if (zend_call_function(&call->fci, &call->fcc) == SUCCESS && Z_TYPE(result) != IS_UNDEF) {
+		remove = zend_is_true(&result);
 		zval_ptr_dtor(&result);
 	}
+	zval_ptr_dtor(&param);
 
 	return remove;
 } /* }}} */
