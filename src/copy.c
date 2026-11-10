@@ -24,7 +24,13 @@
 #	include <valgrind/drd.h>
 #endif
 
-static HashTable* pmmpthread_copy_hash(const pmmpthread_ident_t* owner, HashTable* source);
+/* {{{ references being copied further up the stack, so arrays that contain themselves don't recurse forever */
+typedef struct _pmmpthread_copy_ref_t {
+	const zend_reference* ref;
+	const struct _pmmpthread_copy_ref_t* outer;
+} pmmpthread_copy_ref_t; /* }}} */
+
+static HashTable* pmmpthread_copy_hash(const pmmpthread_ident_t* owner, HashTable* source, const pmmpthread_copy_ref_t* refs);
 static zend_ast_ref* pmmpthread_copy_ast(const pmmpthread_ident_t* owner, zend_ast* ast);
 static void* pmmpthread_copy_ast_tree(const pmmpthread_ident_t* owner, zend_ast* ast, void* buf);
 
@@ -49,11 +55,19 @@ zend_string* pmmpthread_copy_string(zend_string* s) {
 	return ret;
 }
 
-int pmmpthread_copy_zval(const pmmpthread_ident_t* owner, zval* dest, zval* source) {
+static int pmmpthread_copy_zval_ex(const pmmpthread_ident_t* owner, zval* dest, zval* source, const pmmpthread_copy_ref_t* refs) {
 	if (Z_TYPE_P(source) == IS_INDIRECT)
-		return pmmpthread_copy_zval(owner, dest, Z_INDIRECT_P(source));
-	if (Z_TYPE_P(source) == IS_REFERENCE)
-		return pmmpthread_copy_zval(owner, dest, &Z_REF_P(source)->val);
+		return pmmpthread_copy_zval_ex(owner, dest, Z_INDIRECT_P(source), refs);
+	if (Z_TYPE_P(source) == IS_REFERENCE) {
+		pmmpthread_copy_ref_t ref = {Z_REF_P(source), refs};
+
+		for (; refs != NULL; refs = refs->outer) {
+			if (refs->ref == ref.ref) {
+				return FAILURE;
+			}
+		}
+		return pmmpthread_copy_zval_ex(owner, dest, &Z_REF_P(source)->val, &ref);
+	}
 
 	int result = FAILURE;
 	switch (Z_TYPE_P(source)) {
@@ -75,7 +89,7 @@ int pmmpthread_copy_zval(const pmmpthread_ident_t* owner, zval* dest, zval* sour
 		if (Z_ARRVAL_P(source) == &zend_empty_array) {
 			ZVAL_EMPTY_ARRAY(dest);
 		} else {
-			ZVAL_ARR(dest, pmmpthread_copy_hash(owner, Z_ARRVAL_P(source)));
+			ZVAL_ARR(dest, pmmpthread_copy_hash(owner, Z_ARRVAL_P(source), refs));
 		}
 		result = SUCCESS;
 		break;
@@ -108,7 +122,11 @@ int pmmpthread_copy_zval(const pmmpthread_ident_t* owner, zval* dest, zval* sour
 	return result;
 }
 
-static HashTable* pmmpthread_copy_hash(const pmmpthread_ident_t* owner, HashTable* source) {
+int pmmpthread_copy_zval(const pmmpthread_ident_t* owner, zval* dest, zval* source) {
+	return pmmpthread_copy_zval_ex(owner, dest, source, NULL);
+}
+
+static HashTable* pmmpthread_copy_hash(const pmmpthread_ident_t* owner, HashTable* source, const pmmpthread_copy_ref_t* refs) {
 	zval newzval;
 
 	zend_ulong h;
@@ -127,7 +145,7 @@ static HashTable* pmmpthread_copy_hash(const pmmpthread_ident_t* owner, HashTabl
 	zend_hash_init(ht, source->nNumUsed, NULL, source->pDestructor, persistent);
 
 	ZEND_HASH_FOREACH_KEY_VAL(source, h, key, val) {
-		if (pmmpthread_copy_zval(owner, &newzval, val) == FAILURE) {
+		if (pmmpthread_copy_zval_ex(owner, &newzval, val, refs) == FAILURE) {
 			continue;
 		}
 
