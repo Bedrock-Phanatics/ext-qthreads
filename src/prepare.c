@@ -1377,6 +1377,11 @@ void pmmpthread_call_shutdown_functions(void) {
 
 /* {{{ */
 int pmmpthread_prepared_shutdown(void) {
+	//destructors and joins can wait for threads which need the globals lock to get anywhere, so they go first
+	pmmpthread_monitor_unwind(0);
+	zend_call_destructors();
+	pmmpthread_join_running_threads();
+
 	PMMPTHREAD_PREPARATION_BEGIN_CRITICAL() {
 		PG(report_memleaks) = 0;
 
