@@ -1175,12 +1175,15 @@ static inline void pmmpthread_prepare_ini(const pmmpthread_ident_t* source) {
 						zend_hash_add_ptr(EG(modified_ini_directives), copied, entry[1]);
 					}
 
+					//handlers may keep pointing into the value, so it can't be the creator's
+					zend_string *value = pmmpthread_copy_string(entry[0]->value);
+
 					entry[1]->modifiable = 1;
-					entry[1]->on_modify(entry[1], entry[0]->value, entry[1]->mh_arg1, entry[1]->mh_arg2, entry[1]->mh_arg3, ZEND_INI_SYSTEM);
+					entry[1]->on_modify(entry[1], value, entry[1]->mh_arg1, entry[1]->mh_arg2, entry[1]->mh_arg3, ZEND_INI_SYSTEM);
 					if (entry[1]->modified && entry[1]->orig_value != entry[1]->value) {
 						zend_string_release(entry[1]->value);
 					}
-					entry[1]->value = pmmpthread_copy_string(entry[0]->value);
+					entry[1]->value = value;
 					entry[1]->modifiable = resmod;
 
 					zend_string_release(copied);
