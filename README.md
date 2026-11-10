@@ -29,6 +29,7 @@ pmmpthread is used in production on thousands of [PocketMine-MP](https://github.
 - Much faster `Pool`/`Worker` task submission and collection, especially with several workers (see [Worker spinning](#worker-spinning))
 - Faster `ThreadSafeArray` merges, object creation and connections
 - Fixes for crashes when copying classes and functions from a thread that's still declaring new ones, and for several races, deadlocks and leaks
+- A fatal error in one thread no longer leaves the others deadlocked or crashing (see [Fatal errors](#fatal-errors))
 - Sanitizer CI and a benchmark suite in `bench/`
 
 ## Changes compared to the original
@@ -63,6 +64,11 @@ to your `php.ini` file.
 Waking a sleeping `Worker` costs the thread submitting the task a syscall, which can take longer than a small task itself, especially in VMs. So when a thread submits tasks fast enough that waking workers would take up more than half its time, a worker which runs out stays awake for a while before sleeping, adapting to how soon tasks usually arrive. Workers getting tasks at a slower, steady pace just sleep, rather than burning a core each to shave a few microseconds off every task.
 
 `pmmpthread.worker_spin_us` (default `200`, `php.ini` only) is the longest a worker will stay awake like this. Set it to `0` to always sleep right away, which uses less CPU during bursts of small tasks, at the cost of throughput.
+
+## Fatal errors
+A fatal error, like running out of memory, ends the thread it happens in without running destructors. That thread still unlocks the thread-safe objects it was using, joins the threads it started before freeing anything they use, and stops holding up consumers of a `ThreadSafeQueue` it was pushing to, so the rest of the process carries on. As at a normal shutdown, joining a `Worker` waits for its queued tasks to finish.
+
+Tasks which were still queued on a `Worker` when one of its tasks died are never run, and keep counting towards `collect()` until they're taken back with `unstack()`.
 
 ## Known issue: big strings on objects shared with other threads
 When a thread drops its last ref to a thread-safe object that another thread is still connected to, it makes a persistent copy of every string it assigned to that object, since its own copy is about to be freed. For example, the main thread collecting a task whose worker hasn't let go of it yet copies the strings it passed to the task.
