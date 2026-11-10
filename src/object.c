@@ -343,13 +343,18 @@ static void pmmpthread_base_ctor(pmmpthread_zend_object_t* base, zend_class_entr
 } /* }}} */
 
 /* {{{ */
+static zend_bool pmmpthread_base_needs_join(pmmpthread_zend_object_t* base) {
+	return base->ts_obj != NULL && PMMPTHREAD_IN_CREATOR(base) && (PMMPTHREAD_IS_THREAD(base)||PMMPTHREAD_IS_WORKER(base)) &&
+		pmmpthread_monitor_check(&base->ts_obj->monitor, PMMPTHREAD_MONITOR_STARTED) &&
+		!pmmpthread_monitor_check(&base->ts_obj->monitor, PMMPTHREAD_MONITOR_JOINED);
+} /* }}} */
+
+/* {{{ */
 void pmmpthread_base_dtor(zend_object *object) {
 	//TODO: how does this play with __destruct() calls (e.g. adding a ref to self)?
 	pmmpthread_zend_object_t* base = PMMPTHREAD_FETCH_FROM(object);
 
-	if (base->ts_obj != NULL && PMMPTHREAD_IN_CREATOR(base) && (PMMPTHREAD_IS_THREAD(base)||PMMPTHREAD_IS_WORKER(base)) &&
-		pmmpthread_monitor_check(&base->ts_obj->monitor, PMMPTHREAD_MONITOR_STARTED) &&
-		!pmmpthread_monitor_check(&base->ts_obj->monitor, PMMPTHREAD_MONITOR_JOINED)) {
+	if (pmmpthread_base_needs_join(base)) {
 		zend_call_method_with_0_params(object, object->ce, NULL, "join", NULL);
 
 		//in case the user join didn't call the parent - make sure we join, otherwise bad things may happen
@@ -359,6 +364,18 @@ void pmmpthread_base_dtor(zend_object *object) {
 	}
 
 	zend_objects_destroy_object(object);
+} /* }}} */
+
+/* {{{ a fatal error skips destructors, but our threads keep using this thread's objects until they're joined.
+	Objects are freed in no useful order afterwards, so this has to happen before any of them go */
+void pmmpthread_join_running_threads(void) {
+	for (uint32_t i = 1; i < EG(objects_store).top; i++) {
+		zend_object* object = EG(objects_store).object_buckets[i];
+		if (IS_OBJ_VALID(object) && !(OBJ_FLAGS(object) & IS_OBJ_FREE_CALLED) && object->handlers == &pmmpthread_ts_ce_handlers &&
+			pmmpthread_base_needs_join(PMMPTHREAD_FETCH_FROM(object))) {
+			pmmpthread_join(PMMPTHREAD_FETCH_FROM(object));
+		}
+	}
 } /* }}} */
 
 /* {{{ */
@@ -388,6 +405,11 @@ void pmmpthread_base_free(zend_object *object) {
 		pmmpthread_globals_object_delete(base);
 		zend_object_std_dtor(object);
 		return;
+	}
+
+	if (pmmpthread_base_needs_join(base)) {
+		//the destructor was skipped, and the thread still uses this object
+		pmmpthread_join(base);
 	}
 
 	if (base->worker_data) {

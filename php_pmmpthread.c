@@ -343,6 +343,12 @@ PHP_RINIT_FUNCTION(pmmpthread) {
 }
 
 PHP_RSHUTDOWN_FUNCTION(pmmpthread) {
+	if (pmmpthread_instance == TSRMLS_CACHE) {
+		//threads clean up before their request shutdown instead, see pmmpthread_prepared_shutdown()
+		pmmpthread_monitor_unwind(0);
+		pmmpthread_join_running_threads();
+	}
+
 	//objects normally aren't freed yet, but opcache preloading frees them before its request shutdown
 	for (uint32_t i = 1; i < EG(objects_store).top; i++) {
 		zend_object* obj = EG(objects_store).object_buckets[i];

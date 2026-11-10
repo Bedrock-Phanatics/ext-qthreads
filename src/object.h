@@ -34,6 +34,7 @@ zend_object* pmmpthread_worker_ctor(zend_class_entry *entry);
 zend_object* pmmpthread_thread_ctor(zend_class_entry *entry);
 void         pmmpthread_base_dtor(zend_object *object);
 void         pmmpthread_base_free(zend_object *object);
+void         pmmpthread_join_running_threads(void);
 HashTable*   pmmpthread_base_gc(zend_object *object, zval **table, int *n);
 /* }}} */
 
