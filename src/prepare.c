@@ -555,7 +555,7 @@ static HashTable* prepare_backed_enum_table(const pmmpthread_ident_t* owner, con
 	HashTable *result = emalloc(sizeof(HashTable));
 	zend_hash_init(result, 0, NULL, ZVAL_PTR_DTOR, 0);
 
-	HashPosition h;
+	zend_ulong h;
 	zend_string* key;
 	zval* val;
 	ZEND_HASH_FOREACH_KEY_VAL(candidate_table, h, key, val) {
@@ -566,7 +566,7 @@ static HashTable* prepare_backed_enum_table(const pmmpthread_ident_t* owner, con
 		}
 		if (key) {
 			zend_string* new_key = pmmpthread_copy_string(key);
-			zend_hash_add_new(result, key, &new_val);
+			zend_hash_add_new(result, new_key, &new_val);
 			zend_string_release(new_key);
 		}
 		else {
