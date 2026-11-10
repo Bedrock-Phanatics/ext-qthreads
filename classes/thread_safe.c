@@ -70,6 +70,8 @@ ThreadSafe_method(synchronized)
 	int argc = 0;
 	zval *argv = NULL;
 	pmmpthread_object_t* threaded= PMMPTHREAD_FETCH_TS;
+	uint32_t held = pmmpthread_monitor_held.depth;
+	zend_bool bailed = 0;
 
 	ZEND_PARSE_PARAMETERS_START_EX(ZEND_PARSE_PARAMS_THROW, 1, -1)
 		Z_PARAM_FUNC(call.fci, call.fcc)
@@ -89,9 +91,14 @@ ThreadSafe_method(synchronized)
 			/* call the closure */
 			zend_call_function(&call.fci, &call.fcc);
 		} zend_catch {
-			ZVAL_UNDEF(return_value);
+			bailed = 1;
 		} zend_end_try ();
 
+		if (bailed) {
+			//also drops whatever the closure still had locked
+			pmmpthread_monitor_unwind(held);
+			zend_bailout();
+		}
 		pmmpthread_monitor_unlock(&threaded->monitor);
 	}
 

@@ -91,6 +91,7 @@ static inline zend_result pmmpthread_routine_run_function(pmmpthread_zend_object
 			}
 		}
 	} zend_catch{
+		pmmpthread_monitor_unwind(0);
 		pmmpthread_monitor_add(&connection->ts_obj->monitor, PMMPTHREAD_MONITOR_ERROR);
 	} zend_end_try();
 
@@ -143,6 +144,8 @@ static void* pmmpthread_routine(pmmpthread_routine_arg_t* routine) {
 					}
 				}
 			}
+		} zend_catch {
+			pmmpthread_monitor_unwind(0);
 		} zend_end_try();
 
 		pmmpthread_call_shutdown_functions();

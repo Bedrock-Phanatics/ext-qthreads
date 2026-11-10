@@ -36,14 +36,36 @@ typedef struct _pmmpthread_monitor_t {
 #define PMMPTHREAD_MONITOR_EXIT            (1<<6)
 #define PMMPTHREAD_MONITOR_AWAIT_JOIN      (1<<7)
 
+//the monitors this thread holds, innermost last. A fatal error jumps over the code that would have unlocked them.
+//Kept small as it lives in static TLS, deeper ones just aren't unwound
+#define PMMPTHREAD_MONITOR_HELD_MAX 8
+
+typedef struct _pmmpthread_monitor_held_t {
+	uint32_t depth;
+	pmmpthread_monitor_t* monitors[PMMPTHREAD_MONITOR_HELD_MAX];
+} pmmpthread_monitor_held_t;
+
+extern TSRM_TLS pmmpthread_monitor_held_t pmmpthread_monitor_held TSRM_TLS_MODEL_ATTR;
+
 zend_result pmmpthread_monitor_init(pmmpthread_monitor_t* m);
 void pmmpthread_monitor_destroy(pmmpthread_monitor_t* m);
+/* {{{ unlocks everything this thread locked since it held depth monitors */
+void pmmpthread_monitor_unwind(uint32_t depth); /* }}} */
 
 static zend_always_inline zend_bool pmmpthread_monitor_lock(pmmpthread_monitor_t *m) {
-	return (pthread_mutex_lock(&m->mutex) == 0);
+	if (pthread_mutex_lock(&m->mutex) != 0) {
+		return 0;
+	}
+	if (pmmpthread_monitor_held.depth < PMMPTHREAD_MONITOR_HELD_MAX) {
+		pmmpthread_monitor_held.monitors[pmmpthread_monitor_held.depth] = m;
+	}
+	pmmpthread_monitor_held.depth++;
+	return 1;
 }
 
 static zend_always_inline zend_bool pmmpthread_monitor_unlock(pmmpthread_monitor_t *m) {
+	pmmpthread_monitor_held.depth--;
+	ZEND_ASSERT(pmmpthread_monitor_held.depth >= PMMPTHREAD_MONITOR_HELD_MAX || pmmpthread_monitor_held.monitors[pmmpthread_monitor_held.depth] == m);
 	return (pthread_mutex_unlock(&m->mutex) == 0);
 }
 

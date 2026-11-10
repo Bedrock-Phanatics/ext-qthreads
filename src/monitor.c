@@ -19,6 +19,19 @@
 #include <src/pmmpthread.h>
 #include <src/monitor.h>
 
+TSRM_TLS pmmpthread_monitor_held_t pmmpthread_monitor_held TSRM_TLS_MODEL_ATTR = {0};
+
+void pmmpthread_monitor_unwind(uint32_t depth) {
+	while (pmmpthread_monitor_held.depth > depth) {
+		if (--pmmpthread_monitor_held.depth < PMMPTHREAD_MONITOR_HELD_MAX) {
+			pmmpthread_monitor_t* m = pmmpthread_monitor_held.monitors[pmmpthread_monitor_held.depth];
+			if (m != NULL) {
+				pthread_mutex_unlock(&m->mutex);
+			}
+		}
+	}
+}
+
 zend_result pmmpthread_monitor_init(pmmpthread_monitor_t* m) {
 	pthread_mutexattr_t at;
 
@@ -45,6 +58,13 @@ zend_result pmmpthread_monitor_init(pmmpthread_monitor_t* m) {
 }
 
 void pmmpthread_monitor_destroy(pmmpthread_monitor_t* m) {
+	//still locked if a fatal error interrupted this thread under it, and unwinding it later would touch freed memory
+	for (uint32_t i = MIN(pmmpthread_monitor_held.depth, PMMPTHREAD_MONITOR_HELD_MAX); i-- > 0;) {
+		if (pmmpthread_monitor_held.monitors[i] == m) {
+			pmmpthread_monitor_held.monitors[i] = NULL;
+			pthread_mutex_unlock(&m->mutex);
+		}
+	}
 	pthread_mutex_destroy(&m->mutex);
 	pthread_cond_destroy(&m->cond);
 }
