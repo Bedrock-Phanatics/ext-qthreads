@@ -23,7 +23,9 @@ ThreadSafeQueue_method(push)
 {
 	pmmpthread_queue_object_t *queue = PMMPTHREAD_FETCH_QUEUE;
 	zval *value;
-	zend_result result;
+	zend_result result = FAILURE;
+	uint32_t held = pmmpthread_monitor_held.depth;
+	zend_bool bailed = 0;
 
 	ZEND_PARSE_PARAMETERS_START_EX(ZEND_PARSE_PARAMS_THROW, 1, 1)
 		Z_PARAM_ZVAL(value)
@@ -43,7 +45,12 @@ ThreadSafeQueue_method(push)
 	queue->pushing++;
 	pthread_mutex_unlock(&queue->mutex);
 
-	result = pmmpthread_store_queue_push(Z_OBJ_P(getThis()), value);
+	//consumers of a closed queue wait for us, so running out of memory here mustn't leave them waiting forever
+	zend_try {
+		result = pmmpthread_store_queue_push(Z_OBJ_P(getThis()), value);
+	} zend_catch {
+		bailed = 1;
+	} zend_end_try();
 
 	pthread_mutex_lock(&queue->mutex);
 	queue->pushing--;
@@ -58,6 +65,10 @@ ThreadSafeQueue_method(push)
 	}
 	pthread_mutex_unlock(&queue->mutex);
 
+	if (bailed) {
+		pmmpthread_monitor_unwind(held);
+		zend_bailout();
+	}
 	if (result == FAILURE && !EG(exception)) {
 		zend_throw_error(
 			pmmpthread_ce_nts_value_error,
