@@ -71,24 +71,25 @@ Pool_method(resize) {
 		Z_PARAM_LONG(newsize)
 	ZEND_PARSE_PARAMETERS_END();
 
+	if (newsize < 0) {
+		zend_argument_value_error(1, "must be greater than or equal to 0");
+		RETURN_THROWS();
+	}
+
 	workers = zend_read_property(Z_OBJCE_P(getThis()), Z_OBJ_P(getThis()), ZEND_STRL("workers"), 1, &tmp[0]);
 	size = zend_read_property(Z_OBJCE_P(getThis()), Z_OBJ_P(getThis()), ZEND_STRL("size"), 1, &tmp[1]);
 
-	if (Z_TYPE_P(workers) == IS_ARRAY &&
-		newsize < zend_hash_num_elements(Z_ARRVAL_P(workers))) {
-		do {
-			zval *worker = NULL;
-			zend_long top = zend_hash_num_elements(Z_ARRVAL_P(workers));
+	while (Z_TYPE_P(workers) == IS_ARRAY && newsize < zend_hash_num_elements(Z_ARRVAL_P(workers))) {
+		zend_long top = zend_hash_num_elements(Z_ARRVAL_P(workers)) - 1;
+		zval *worker = zend_hash_index_find(Z_ARRVAL_P(workers), top);
 
-			if ((worker = zend_hash_index_find(
-				Z_ARRVAL_P(workers), top-1))) {
-				zend_call_method(
-					Z_OBJ_P(worker), Z_OBJCE_P(worker), NULL, ZEND_STRL("shutdown"), NULL, 0, NULL, NULL);
-
-			}
-
-			zend_hash_index_del(Z_ARRVAL_P(workers), top-1);
-		} while (zend_hash_num_elements(Z_ARRVAL_P(workers)) != newsize);
+		if (worker == NULL) {
+			//a subclass rearranged the workers, so there's no last one to stop
+			break;
+		}
+		zend_call_method(
+			Z_OBJ_P(worker), Z_OBJCE_P(worker), NULL, ZEND_STRL("shutdown"), NULL, 0, NULL, NULL);
+		zend_hash_index_del(Z_ARRVAL_P(workers), top);
 	}
 
 	ZVAL_LONG(size, newsize);
